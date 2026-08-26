@@ -1,0 +1,14 @@
+# Secrets - never commit
+.env
+*.env
+!.env.example
+
+# Pulled evidence - contains your tenant's real data
+output/
+*.json
+!package.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
