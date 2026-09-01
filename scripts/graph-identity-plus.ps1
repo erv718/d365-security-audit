@@ -6,7 +6,10 @@
 . (Join-Path $PSScriptRoot '_common.ps1')
 
 $tok = Get-Token 'https://graph.microsoft.com'
-if (-not $tok) { throw 'No Microsoft Graph token.' }
+if (-not $tok) {
+    Write-Warning 'No Microsoft Graph token (sign-in declined, timed out, or unavailable). Skipping the extra identity checks; other sweeps still run.'
+    return
+}
 $H    = @{ Authorization = "Bearer $tok" }
 $Hadv = @{ Authorization = "Bearer $tok"; ConsistencyLevel = 'eventual' }
 $G    = 'https://graph.microsoft.com/v1.0'
