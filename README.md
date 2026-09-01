@@ -4,6 +4,18 @@ A small PowerShell toolkit that reads the actual security configuration of a Dyn
 
 It is **read-only**. It does not change anything in your tenant.
 
+## Data privacy
+
+This runs entirely under your control. It reads your own tenant and writes the results to your own disk. Nothing is sent anywhere.
+
+- **No telemetry, no phone-home.** The only calls it makes are to your own Microsoft endpoints (Graph, Dataverse, Azure). There is no analytics, and it contacts no third party, including us.
+- **Your data stays local.** All output lands in `output/`, which is git-ignored. You decide what happens to it.
+- **Read-only.** Every call is a GET. It never writes to your tenant.
+- **Auditable.** It is a few hundred lines of PowerShell under MIT. Read every line before you run it, or have your security team do it.
+- **Least privilege.** It needs only read scopes, and it works with your own delegated login if you would rather not create an app at all.
+
+Treat the `output/` folder as sensitive. It describes your security posture, so keep it where your tenant data belongs.
+
 ## Why this exists
 
 Most "security assessments" are interviews. Someone asks how things are configured, writes down the answers, and hands back a report based on what they were told. That misses whatever the person answering did not know, mis-remembered, or never checked.
