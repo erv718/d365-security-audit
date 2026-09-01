@@ -90,12 +90,19 @@ Two questions cover almost everything the tool reports:
 
 A finding does not mean you were breached. It means that if something happened, you might not be able to see it or reconstruct it. Fix the "can't see" items first - they are usually configuration, not projects.
 
-## Roadmap
+## Status and roadmap
 
-- DLP policy pull (Power Platform admin API)
-- Purview / retention configuration
+`main` is the stable read-only config audit: identity, Dataverse security, Azure network, and a ranked findings list.
+
+In progress on the `feature/full-assessment` branch: coverage of all 8 domains / 29 checks of the Microsoft Power Platform & Dynamics 365 Security Review, with a report that marks each check Aligned / Partial / Gap / Manual. It is built and pending a validation run against a live tenant before it merges to `main`.
+
+Later:
 - HTML report output
 - Optional cross-check against a saved baseline
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to add checks, and [SECURITY.md](SECURITY.md) to report an issue in the tool. The one hard rule: it stays read-only.
 
 ## License
 
