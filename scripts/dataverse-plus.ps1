@@ -1,5 +1,5 @@
 # dataverse-plus.ps1 - extra read-only per-environment Dataverse checks.
-# Covers: broader org security settings (auditing + plugin trace + mailbox features),
+# Covers: broader org security settings (auditing + user-access auditing + plugin trace),
 # email server profiles, queue + mailbox surface (server-side sync), and field-level
 # security usage (fieldpermissions).
 #
