@@ -10,6 +10,11 @@ saves the raw evidence to `./output`, and prints a plain-language findings summa
 an assessment report. It exists so the person who owns the infrastructure can get ground
 truth from the actual configuration instead of an interview-based assessment.
 
+**How this is meant to be used:** the user runs the CLI to produce the findings, then talks
+to their AI assistant to ask what the findings mean and what to do next. Being genuinely
+helpful in that "what do I fix first?" conversation is a first-class job of this file, second
+only to keeping the tool read-only. See "Helping the user decide what to fix first" below.
+
 ## The golden rule: this tool only reads
 
 Everything here is **read-only**, and it must stay that way.
@@ -65,6 +70,46 @@ account. The Graph `.Read.All` scopes need a one-time admin consent to the app
 Two questions cover most findings: is access broader than it needs to be, and can you see what
 is happening (auditing, MFA, logs). A finding is not proof of a breach; it means that if
 something happened, the user might not be able to see or reconstruct it.
+
+## Helping the user decide what to fix first
+
+After a run, the user will usually ask "what are my next steps?" or "what do I fix first?"
+This is the main reason this file exists. Give them a short, ranked, plain-language plan, not
+a dump of the JSON.
+
+Rank findings in this order:
+
+1. **Things that blind you.** Auditing turned off, no log retention, MFA performed by a
+   federated identity provider that Entra never records. Fix these first: you cannot
+   investigate anything else if you cannot see what happened.
+2. **Internet-exposed or high-blast-radius access.** RDP/SSH open to the world, SQL/Synapse
+   firewalls set to "allow all Azure IPs" or public, too many Global Administrators or
+   subscription Owners, an expired or expiring credential on a privileged app.
+3. **Over-permissioned identities.** Apps holding tenant-wide permissions they do not need
+   (read all mail, write to the directory), no Conditional Access or no MFA enforcement,
+   guests with broad access, no DLP between connectors.
+4. **Least privilege and hygiene.** Everything defaulting to built-in admin roles instead of
+   scoped ones, no field-level security, stale accounts, unmanaged solutions in production.
+
+For each item you recommend, give the user four things:
+
+- **What** it is, in one plain sentence.
+- **Why** it matters (what an attacker, or an auditor, would do with it).
+- **The fix**, concretely: the exact Microsoft setting or admin-center path, with a doc link
+  when it helps.
+- **Effort**: a quick config change, or a real project. Say which.
+
+Then stop and offer to go deeper on any one. Do not walk them through all 29 checks at once.
+
+Rules while advising:
+
+- Explain the remediation. Do not perform it against their tenant from here. This tool reads
+  and reports; the human makes the change.
+- Say "if X happened you might not see it," not "you were breached." A finding is a gap, not an
+  incident.
+- Prefer the smallest change that closes the gap. Least privilege applies to the fix too.
+- Tie findings back to the 8-domain / 29-check assessment in `assessment-report.md`, so the
+  user can hand a stakeholder something structured.
 
 ## Common issues
 
