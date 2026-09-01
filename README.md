@@ -53,7 +53,7 @@ git clone https://github.com/erv718/d365-security-audit ; cd d365-security-audit
 
 # 2. configure
 copy .env.example .env
-#    fill in .env  (see docs/permissions.md)
+#    fill in .env  (full walkthrough in docs/setup.md, permission list in docs/permissions.md)
 
 # 3. (only if you are NOT using an app registration)
 az login
