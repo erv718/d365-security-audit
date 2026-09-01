@@ -35,8 +35,7 @@ if (-not $SkipAzure) {
 }
 
 Step 'scripts/analyze.ps1'
-# TODO: the 29-check assessment report mapper. See docs/full-assessment-roadmap.md
-# Step 'scripts/assessment-report.ps1'
+Step 'scripts/assessment-report.ps1'   # maps the pulls to the MS 29-check assessment + extras
 
 Write-Host "`nDone. Raw evidence: ./output/*.json" -ForegroundColor Green
 Write-Host "Check output/ for any *-ERROR.json (endpoints that need a tweak in this branch)." -ForegroundColor Yellow
