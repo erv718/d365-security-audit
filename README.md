@@ -49,7 +49,7 @@ This tool reads the configuration directly, so the findings are based on the liv
 
 ```powershell
 # 1. get the code
-git clone <your-fork-url> ; cd d365-security-audit
+git clone https://github.com/erv718/d365-security-audit ; cd d365-security-audit
 
 # 2. configure
 copy .env.example .env
