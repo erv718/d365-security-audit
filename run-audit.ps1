@@ -1,8 +1,10 @@
 # run-audit.ps1 - orchestrator. Runs all read-only sweeps, then prints the summary.
 #
-#   1. Copy .env.example to .env and fill it in (see docs/permissions.md)
-#   2. (Optional) az login   - if you are not using an app registration
-#   3. ./run-audit.ps1
+#   1. Copy .env.example to .env and fill in your read-only app (see docs/permissions.md)
+#   2. ./run-audit.ps1
+#
+#   With an app registration, nothing interactive is needed. No app? Then Graph uses an
+#   interactive sign-in and `az login` covers Azure / Dataverse / Power Platform.
 #
 # Everything is read-only. Nothing is written to the audited environment.
 

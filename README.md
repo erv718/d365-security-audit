@@ -37,18 +37,23 @@ This tool reads the configuration directly, so the findings are based on the liv
 
 ```powershell
 # 1. get the code
-git clone <your-fork-url> ; cd d365-security-audit
+git clone https://github.com/erv718/d365-security-audit.git ; cd d365-security-audit
 
 # 2. configure
 copy .env.example .env
-#    fill in .env  (see docs/permissions.md)
+#    fill in TENANT_ID / CLIENT_ID / CLIENT_SECRET for your read-only app
+#    (docs/permissions.md lists the exact permissions)
 
-# 3. (only if you are NOT using an app registration)
-az login
-
-# 4. run
+# 3. run
 ./run-audit.ps1
 ```
+
+With a read-only app registration filled in, the whole audit runs on that one
+credential. Nothing interactive, and the Azure CLI is not used or required.
+
+No app registration? See the "run as yourself" note in `.env.example`: Graph uses
+an interactive device-code sign-in and `az login` covers the Azure / Dataverse /
+Power Platform reads.
 
 Output lands in `./output` (git-ignored):
 - `*.json` - the raw evidence for each area
@@ -59,7 +64,8 @@ Run a single area with `-SkipGraph`, `-SkipDataverse`, or `-SkipAzure`.
 ## Requirements
 
 - PowerShell 7+ (or Windows PowerShell 5.1)
-- Azure CLI (`az`) if you run as yourself instead of an app registration
+- A read-only app registration (recommended). With it, the audit needs nothing else - no Azure CLI.
+- Only if you run without an app: the Azure CLI (`az`) for the Azure / Dataverse reads.
 - Read-only permissions per [docs/permissions.md](docs/permissions.md)
 
 ## Use it responsibly
