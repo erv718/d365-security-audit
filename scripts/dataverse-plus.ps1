@@ -5,7 +5,7 @@
 #
 # Environment URLs come from DATAVERSE_ENVIRONMENTS in .env (comma-separated) AND, if
 # present, from output/pp-environment-urls.json (auto-discovered by the Power Platform
-# sweep). The app (or your az login identity) must have a read role in each environment.
+# sweep). The app must be an Application User with a read-only role in each environment.
 # Read-only. GET/paged reads only. Every environment and every query is isolated in its
 # own try/catch so one failure (missing license / no access) never stops the sweep.
 

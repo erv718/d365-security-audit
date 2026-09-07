@@ -3,7 +3,7 @@
 #
 # Set DATAVERSE_ENVIRONMENTS in .env to a comma-separated list of environment URLs, e.g.
 #   DATAVERSE_ENVIRONMENTS=https://yourorg.crm.dynamics.com,https://yourorg-test.crm.dynamics.com
-# The app (or your az login identity) must be an Application User / have a read role in each.
+# The app must be added as an Application User with a read-only role in each.
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 

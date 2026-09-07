@@ -48,12 +48,12 @@ copy .env.example .env
 ./run-audit.ps1
 ```
 
-With a read-only app registration filled in, the whole audit runs on that one
-credential. Nothing interactive, and the Azure CLI is not used or required.
-
-No app registration? See the "run as yourself" note in `.env.example`: Graph uses
-an interactive device-code sign-in and `az login` covers the Azure / Dataverse /
-Power Platform reads.
+The audit runs entirely on that one read-only credential. **There is no interactive
+sign-in of any kind**: the tool never signs in as a person, never opens a browser
+prompt, and never shows a device code. On every run it first checks your app's setup
+and prints the exact fix for anything missing (you can also run the check alone with
+`pwsh ./scripts/check-setup.ps1`). If `.env` is empty, it stops with setup
+instructions instead of falling back to your account.
 
 Output lands in `./output` (git-ignored):
 - `*.json` - the raw evidence for each area
@@ -64,8 +64,7 @@ Run a single area with `-SkipGraph`, `-SkipDataverse`, or `-SkipAzure`.
 ## Requirements
 
 - PowerShell 7+ (or Windows PowerShell 5.1)
-- A read-only app registration (recommended). With it, the audit needs nothing else - no Azure CLI.
-- Only if you run without an app: the Azure CLI (`az`) for the Azure / Dataverse reads.
+- A read-only app registration. This is the only way the tool authenticates - no Azure CLI, no interactive sign-in.
 - Read-only permissions per [docs/permissions.md](docs/permissions.md)
 
 ## Use it responsibly

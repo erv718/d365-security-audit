@@ -39,11 +39,16 @@ Output lands in `./output` (git-ignored): `*.json` raw evidence, `FINDINGS-summa
 (also printed to the console), and `assessment-report.md`. Run a single area with
 `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
 
-## Authentication (help the user pick and set up)
+## Authentication (app registration ONLY, by design)
 
-**Option A - read-only app registration (recommended).** Set `TENANT_ID`, `CLIENT_ID`,
-`CLIENT_SECRET` in `.env`. The app's own token covers all four planes, so the run is fully
-unattended: no Azure CLI, nothing interactive. The app needs these, all read-only:
+**The read-only app registration is the only way this tool authenticates.** This is a
+deliberate security decision by the project: the tool never performs an interactive sign-in,
+never shows a device code, and never uses a person's account or CLI session, so an admin can
+run it without ever putting their own token in play. **Do not add an interactive sign-in path
+or any auth fallback.**
+
+Set `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` in `.env`. The app's own token covers all four
+planes, so the run is fully unattended. The app needs these, all read-only:
 
 - Microsoft Graph application permissions (grant, then admin consent): `Application.Read.All`,
   `RoleManagement.Read.Directory`, `User.Read.All`, `Policy.Read.All`, `AuditLog.Read.All`,
@@ -54,11 +59,10 @@ unattended: no Azure CLI, nothing interactive. The app needs these, all read-onl
 
 Full details and per-permission reasoning are in [docs/permissions.md](docs/permissions.md).
 
-**Option B - run as yourself (no app).** Leave `CLIENT_ID` / `CLIENT_SECRET` blank. Graph uses
-an interactive device-code sign-in (no app, no secret, no module). Azure, Dataverse, and Power
-Platform use your Azure CLI token, so run `az login` first. That is two sign-ins with the same
-account. The Graph `.Read.All` scopes need a one-time admin consent to the app
-"Microsoft Graph Command Line Tools" before a Global Reader can sign in.
+Every run starts with `scripts/check-setup.ps1`, a read-only preflight that probes each
+permission and prints the exact fix for anything missing. If `.env` is empty or the app cannot
+sign in, the run stops with setup instructions. Point the user at that checklist first when
+something fails.
 
 ## Reading the output
 
@@ -114,15 +118,12 @@ Rules while advising:
 ## Common issues
 
 - **403 Forbidden on a Graph identity check** (auth methods, security defaults, PIM, Intune):
-  the token lacks that scope. On the app path, grant the matching permission above and admin
-  consent. On the no-app path, the Azure CLI token does not carry these scopes, which is the
-  whole reason Option A exists.
+  the app is missing that permission or its admin consent. Run `scripts/check-setup.ps1` to see
+  exactly which one, then grant it and click "Grant admin consent".
 - **400 Bad Request on a Dataverse query**: a `$select` field the table does not have. It is a
   query bug, not a permission problem (permission problems return 403). Fix the field list.
-- **Device-code sign-in blocked**: some tenants block the device-code flow via Conditional
-  Access. Use Option A (app registration) instead.
-- **Dataverse 403 on some environments**: the identity has no security role there. Expected for
-  dev / trial environments; scope `DATAVERSE_ENVIRONMENTS` to the ones the user owns.
+- **Dataverse 403 on some environments**: the app is not an Application User with a role there.
+  Expected for dev / trial environments; scope `DATAVERSE_ENVIRONMENTS` to the ones the user owns.
 
 ## Privacy
 
@@ -134,7 +135,8 @@ Rules while advising:
 
 ## Scripts (all read-only)
 
-- `scripts/_common.ps1` - config, token sources (app / device-code / az CLI), paging, JSON output.
+- `scripts/_common.ps1` - config, the app-registration token (the only auth), paging, JSON output.
+- `scripts/check-setup.ps1` - preflight doctor: probes every permission, prints the fix for gaps.
 - `scripts/graph-sweep.ps1`, `scripts/graph-identity-plus.ps1` - Entra ID identity plane.
 - `scripts/powerplatform-sweep.ps1` - Power Platform admin (environments, DLP, tenant settings).
 - `scripts/dataverse-sweep.ps1`, `scripts/dataverse-plus.ps1` - per-environment Dataverse config.

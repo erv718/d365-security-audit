@@ -3,8 +3,8 @@
 #   1. Copy .env.example to .env and fill in your read-only app (see docs/permissions.md)
 #   2. ./run-audit.ps1
 #
-#   With an app registration, nothing interactive is needed. No app? Then Graph uses an
-#   interactive sign-in and `az login` covers Azure / Dataverse / Power Platform.
+#   This tool authenticates ONLY as that read-only app registration. It never signs in
+#   as a person, never opens a login prompt, and never shows a device code.
 #
 # Everything is read-only. Nothing is written to the audited environment.
 
@@ -18,6 +18,11 @@ function Step($rel) {
 
 Write-Host "D365 / Power Platform Security Audit (read-only)" -ForegroundColor Green
 Write-Host "Output goes to ./output (git-ignored). Nothing is changed in your tenant.`n"
+
+# Preflight: verify the read-only app registration (the ONLY way this tool
+# authenticates) and print the exact fix for anything that is not set up yet.
+$ok = & (Join-Path $here 'scripts/check-setup.ps1')
+if (-not $ok) { return }
 
 if (-not $SkipGraph) {
     Step 'scripts/graph-sweep.ps1'
