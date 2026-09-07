@@ -7,7 +7,7 @@
 
 $tok = Get-Token 'https://graph.microsoft.com'
 if (-not $tok) {
-    Write-Warning 'No Microsoft Graph token (sign-in declined, timed out, or unavailable). Skipping the Entra ID sweep; other sweeps still run.'
+    Write-Warning 'No Microsoft Graph token (app registration missing or its token failed). Skipping the Entra ID sweep; other sweeps still run.'
     return
 }
 $H = @{ Authorization = "Bearer $tok"; ConsistencyLevel = 'eventual' }
