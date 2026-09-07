@@ -86,9 +86,13 @@ function Get-GraphTokenInteractive {
         return $null
     }
     Write-Host ''
-    Write-Host 'Sign-in 1 of 2 - Identity (Entra ID). Read-only, nothing is changed.' -ForegroundColor Cyan
+    Write-Host 'No app registration found in .env (CLIENT_ID / CLIENT_SECRET are blank), so this run' -ForegroundColor Cyan
+    Write-Host 'will sign YOU in instead. If you meant to use an app registration, press Ctrl+C now,' -ForegroundColor Cyan
+    Write-Host 'fill in .env, and re-run. Cancelling is safe - nothing has signed in yet.' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host 'Sign-in 1 of 2 - Identity (Entra ID). Read-only scopes only, nothing is changed.' -ForegroundColor Cyan
     Write-Host "  $($dc.message)" -ForegroundColor Yellow
-    Write-Host '  Use your Global Reader or admin account. No app registration or secret is needed.' -ForegroundColor DarkGray
+    Write-Host '  A Global Reader account is enough; you do not need an admin account for this.' -ForegroundColor DarkGray
 
     $interval = [int]$dc.interval; if ($interval -lt 5) { $interval = 5 }
     $deadline = (Get-Date).AddSeconds([int]$dc.expires_in)
