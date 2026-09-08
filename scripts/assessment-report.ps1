@@ -10,7 +10,7 @@
 . (Join-Path $PSScriptRoot '_common.ps1')
 $out = Get-OutDir
 
-function LJ($name)    { $p = Join-Path $out $name; if (Test-Path $p) { try { Get-Content $p -Raw | ConvertFrom-Json } catch { $null } } }
+function LJ($name)    { $p = Join-Path $out $name; if (Test-Path $p) { try { $r = Get-Content $p -Raw | ConvertFrom-Json; if ($null -eq $r) { ,@() } else { $r } } catch { $null } } }
 function LFiles($pat) { Get-ChildItem $out -Filter $pat -ErrorAction SilentlyContinue }
 function First($x)    { if ($null -eq $x) { return $null } if ($x -is [array]) { $x[0] } else { $x } }
 
@@ -21,7 +21,7 @@ $auditOn = 0; $retentionSet = 0
 foreach ($f in $orgFiles) { $o = First (Get-Content $f.FullName -Raw | ConvertFrom-Json); if ($o.isauditenabled) { $auditOn++ }; if ($o.auditretentionperiodv2) { $retentionSet++ } }
 
 $customRoles = 0
-foreach ($f in (LFiles 'dv-*-roles.json')) { $r = @(Get-Content $f.FullName -Raw | ConvertFrom-Json); $customRoles += @($r | Where-Object { $_.ismanaged -eq $false }).Count }
+foreach ($f in (LFiles 'dv-*-roles.json')) { $r = Get-Content $f.FullName -Raw | ConvertFrom-Json; $customRoles += @($r | Where-Object { $_.ismanaged -eq $false }).Count }
 
 $ca = LJ 'ca-policies.json'
 $caTotal = @($ca).Count
@@ -38,12 +38,12 @@ $apps    = LJ 'applications.json'
 $findings= LJ 'FINDINGS-summary.json'
 
 $sentinelOn = $false
-foreach ($f in (LFiles 'arm-*-sentinel.json')) { $s = Get-Content $f.FullName -Raw | ConvertFrom-Json; if ($s) { $sentinelOn = $true } }
-$logicApps = 0; foreach ($f in (LFiles 'arm-*-logicapps.json')) { $logicApps += @(Get-Content $f.FullName -Raw | ConvertFrom-Json).Count }
-$emailProfiles = 0; foreach ($f in (LFiles 'dvplus-*-emailprofiles.json')) { $emailProfiles += @(Get-Content $f.FullName -Raw | ConvertFrom-Json).Count }
+foreach ($f in (LFiles 'arm-*-sentinel.json')) { $s = Get-Content $f.FullName -Raw | ConvertFrom-Json; if (@($s | Where-Object { $_.sentinelEnabled }).Count -gt 0) { $sentinelOn = $true } }
+$logicApps = 0; foreach ($f in (LFiles 'arm-*-logicapps.json')) { $x = Get-Content $f.FullName -Raw | ConvertFrom-Json; if ($x) { $logicApps += @($x).Count } }
+$emailProfiles = 0; foreach ($f in (LFiles 'dvplus-*-emailprofiles.json')) { $x = Get-Content $f.FullName -Raw | ConvertFrom-Json; if ($x) { $emailProfiles += @($x).Count } }
 $fieldPerms = 0
-foreach ($f in (LFiles 'dvplus-*-fieldpermissions.json')) { $fieldPerms += @(Get-Content $f.FullName -Raw | ConvertFrom-Json).Count }
-foreach ($f in (LFiles 'dv-*-fieldsec.json'))            { $fieldPerms += @(Get-Content $f.FullName -Raw | ConvertFrom-Json).Count }
+foreach ($f in (LFiles 'dvplus-*-fieldpermissions.json')) { $x = Get-Content $f.FullName -Raw | ConvertFrom-Json; if ($x) { $fieldPerms += @($x).Count } }
+foreach ($f in (LFiles 'dv-*-fieldsec.json'))            { $x = Get-Content $f.FullName -Raw | ConvertFrom-Json; if ($x) { $fieldPerms += @($x).Count } }
 
 $expiredSecrets = 0
 if ($apps) {
@@ -61,7 +61,7 @@ Chk '1.1' '1 Entra ID' 'Entra integrated with D365' 'Aligned' 'D365 authenticate
 Chk '1.2' '1 Entra ID' 'Roles least privilege' $(if($customRoles -eq 0){'Gap'}else{'Partial'}) "$customRoles custom security roles across $envN environment(s)."
 Chk '1.3' '1 Entra ID' 'Security group restricts environment access' 'MANUAL' 'Confirm each environment is bound to a security group (not auto-read).'
 Chk '1.4' '1 Entra ID' 'Conditional Access' $(if($caTotal -eq 0){'Not checked'}elseif($caMfa -eq 0){'Gap'}else{'Aligned'}) "$caTotal policies, $caOn enabled, $caMfa enforce MFA."
-Chk '1.5' '1 Entra ID' 'Intune device management' $(if(Have $intune){'Partial'}else{'Not checked'}) $(if(Have $intune){"$(@($intune).Count) compliance policies found."}else{'Intune not read (needs DeviceManagement.Read.All).'})
+Chk '1.5' '1 Entra ID' 'Intune device management' $(if(Have $intune){'Partial'}else{'Not checked'}) $(if(Have $intune){"$(@($intune).Count) compliance policies found."}else{'Intune not read (needs DeviceManagementConfiguration.Read.All).'})
 Chk '1.6' '1 Entra ID' 'Device compliance enforced for D365' 'MANUAL' 'Confirm device compliance is tied to D365 access.'
 
 # Domain 2 - Authentication

@@ -3,7 +3,8 @@
 # tenant settings.
 #
 # ASSUMPTION: the app registration (CLIENT_ID) must be registered as a Power Platform
-# management application, e.g. via PowerShell:
+# management application. That is a one-time setup step an admin runs elsewhere - this
+# tool itself never signs in interactively:
 #     Add-PowerAppsAccount ; New-PowerAppManagementApp -ApplicationId <CLIENT_ID>
 # Without that registration the BAP admin endpoints return 401/403 - each area is
 # wrapped in its own try/catch and simply records the error, so a missing registration

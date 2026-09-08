@@ -31,7 +31,7 @@ Everything here is **read-only**, and it must stay that way.
 ## How to run it
 
 ```powershell
-copy .env.example .env    # then fill it in (see Authentication below)
+Copy-Item .env.example .env    # then fill it in (see Authentication below)
 ./run-audit.ps1
 ```
 
@@ -123,7 +123,10 @@ Rules while advising:
 - **400 Bad Request on a Dataverse query**: a `$select` field the table does not have. It is a
   query bug, not a permission problem (permission problems return 403). Fix the field list.
 - **Dataverse 403 on some environments**: the app is not an Application User with a role there.
-  Expected for dev / trial environments; scope `DATAVERSE_ENVIRONMENTS` to the ones the user owns.
+  Expected for dev / trial environments. Note `dataverse-plus` also audits environments it
+  auto-discovers from `output/pp-environment-urls.json`, so narrowing `DATAVERSE_ENVIRONMENTS`
+  only limits the basic `dataverse-sweep`; the `dvplus-*-ERROR.json` files for environments the
+  user does not own are expected. To silence them, run with `-SkipPowerPlatform` and delete that file.
 
 ## Privacy
 

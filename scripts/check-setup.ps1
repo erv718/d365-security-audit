@@ -69,11 +69,16 @@ $probes = @(
 foreach ($p in $probes) {
     $ok = $true
     try { Invoke-RestMethod -Uri $p.url -Headers $H | Out-Null } catch { $ok = $false }
-    Show $ok "Graph permission: $($p.perm)" @(
+    $fix = @(
         "Entra portal > App registrations > your app > API permissions > Add a permission >",
         "Microsoft Graph > Application permissions > add '$($p.perm)',",
         $consentFix
     )
+    if ($p.perm -eq 'AuditLog.Read.All') {
+        $fix += "Note: sign-in logs also need an Entra ID P1 license. If the permission is already"
+        $fix += "granted and consented, an [X] here is a licensing gap, not a permission gap."
+    }
+    Show $ok "Graph permission: $($p.perm)" $fix
 }
 
 # --- 4. Azure: can the app see any subscriptions? ---------------------------------

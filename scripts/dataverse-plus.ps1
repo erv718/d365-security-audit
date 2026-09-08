@@ -65,7 +65,7 @@ foreach ($url in $envs) {
 
             # --- Org security settings (broader) ---------------------------------
             try {
-                $org = Invoke-Paged "${base}organizations?`$select=name,isauditenabled,isuseraccessauditenabled,auditretentionperiodv2,plugintracelogsetting,ismailboxforfeaturesenabled" $H
+                $org = Invoke-Paged "${base}organizations?`$select=name,isauditenabled,isuseraccessauditenabled,auditretentionperiodv2,plugintracelogsetting" $H
                 Save-Json $org "dvplus-$safe-org-settings.json" | Out-Null
                 $o = @($org)[0]
                 if ($o) { $sumAudit = $o.isauditenabled }
@@ -76,7 +76,9 @@ foreach ($url in $envs) {
 
             # --- Email server profiles -------------------------------------------
             try {
-                $profiles = Invoke-Paged "${base}emailserverprofiles?`$select=name,type" $H
+                # server type omitted from $select: the column name varies by version and an
+                # invalid $select field 400s the whole query - name alone is enough to inventory.
+                $profiles = Invoke-Paged "${base}emailserverprofiles?`$select=name" $H
                 Save-Json $profiles "dvplus-$safe-emailprofiles.json" | Out-Null
                 $sumProfiles = @($profiles).Count
             } catch {

@@ -2,7 +2,7 @@
 
 Goal: grow this tool from a technical config auditor into a fully automated assessment that
 covers all 8 domains / 29 checks of the Microsoft Power Platform & D365 Security Review,
-runnable from just `.env.local`. This doc is the spec, so the work can be finished from any
+runnable from just `.env`. This doc is the spec, so the work can be finished from any
 session with tenant access (validation can't be done without a live tenant).
 
 ## Status
@@ -54,13 +54,14 @@ Reads everything in `output/` and walks all 8 domains / 29 checks. For each chec
 
 ## To finish and validate (from a session with tenant access)
 
-1. Grant the app these read-only permissions and admin-consent them:
-   - Graph (application): `Application.Read.All`, `Directory.Read.All`, `Policy.Read.All`, `AuditLog.Read.All`, `RoleManagement.Read.Directory`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementManagedDevices.Read.All`, and optionally `InformationProtectionPolicy.Read.All` (labels)
+1. Grant the app these read-only permissions and admin-consent them (see docs/permissions.md):
+   - Graph (application), exactly these 7: `Application.Read.All`, `RoleManagement.Read.Directory`, `User.Read.All`, `Policy.Read.All`, `AuditLog.Read.All`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementManagedDevices.Read.All`
    - Azure: `Reader` on each subscription
    - Dataverse: application user + read role in each environment
-   - Power Platform: register as a management app so the BAP endpoints work:
+   - Power Platform: register as a management app so the BAP endpoints work (one-time admin
+     step run elsewhere, not part of the tool's auth):
      `Add-PowerAppsAccount` then `New-PowerAppManagementApp -ApplicationId <clientId>`
-2. Fill `.env.local` (TENANT_ID, CLIENT_ID, CLIENT_SECRET). Leave `DATAVERSE_ENVIRONMENTS` blank - `powerplatform-sweep` auto-discovers the environment URLs.
+2. Fill `.env` (TENANT_ID, CLIENT_ID, CLIENT_SECRET). Leave `DATAVERSE_ENVIRONMENTS` blank - `powerplatform-sweep` auto-discovers the environment URLs.
 3. Run `./run-audit.ps1`.
 4. Check `output/` for `*-ERROR.json`. The DLP and tenant-settings endpoints vary by tenant; if they errored, adjust the api-version/endpoint in `powerplatform-sweep.ps1` and rerun.
 5. When it runs clean, `assessment-report.ps1` produces the 29-check report.
@@ -69,3 +70,5 @@ Reads everything in `output/` and walks all 8 domains / 29 checks. For each chec
 ## Ground rules (unchanged)
 
 Read-only. Get written authorization first. Rotate the secret when done. Never commit `.env`.
+The read-only app registration (client credentials in `.env`) is the ONLY way the tool
+authenticates - no interactive sign-in, no device code, no CLI fallback. Do not add one.

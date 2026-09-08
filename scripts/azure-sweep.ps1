@@ -2,18 +2,20 @@
 # Covers: role assignments (Owners/UAA), SQL firewalls + public access, Synapse firewalls,
 # Key Vaults (RBAC vs access policy, public network), NSGs (RDP/SSH open to the internet).
 #
-# Needs Reader on the target subscriptions. Set AZURE_SUBSCRIPTIONS in .env (comma-separated),
-# or leave blank to audit every subscription the identity can read.
+# The app registration needs the Reader role on the target subscriptions. Set
+# AZURE_SUBSCRIPTIONS in .env (comma-separated), or leave blank to audit every
+# subscription the app can read.
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 
 $tok = Get-Token 'https://management.azure.com'
-if (-not $tok) { throw 'No Azure ARM token.' }
+if (-not $tok) { Write-Warning 'No Azure ARM token - skipping the Azure sweep; other steps still run.'; return }
 $H = @{ Authorization = "Bearer $tok" }
 function Get-Arm($url) { $i=@(); $n=$url; while($n){ $r=Invoke-RestMethod -Uri $n -Headers $H; if($r.value){$i+=$r.value}; $n=$r.nextLink }; return $i }
 
 $subsConf = (Get-Conf AZURE_SUBSCRIPTIONS) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$allSubs = Get-Arm 'https://management.azure.com/subscriptions?api-version=2022-12-01'
+try { $allSubs = Get-Arm 'https://management.azure.com/subscriptions?api-version=2022-12-01' }
+catch { Write-Warning "Could not list subscriptions: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } 'arm-subscriptions-ERROR.json' | Out-Null; return }
 $subs = if ($subsConf) { $allSubs | Where-Object { $subsConf -contains $_.subscriptionId } } else { $allSubs }
 Write-Host "Azure: auditing $($subs.Count) subscription(s)" -ForegroundColor Cyan
 
@@ -34,7 +36,7 @@ foreach ($s in $subs) {
         $highCount = @($ra | Where-Object { $wellKnown[$_.properties.roleDefinitionId.Split('/')[-1]] -in 'Owner','User Access Administrator' -and $_.properties.scope -eq "/subscriptions/$sid" }).Count
         Save-Json $ra "arm-$safe-rbac.json" | Out-Null
         Write-Host "    RBAC: $($ra.Count) assignments; $highCount Owner/UAA at subscription scope" -ForegroundColor Yellow
-    } catch { Write-Warning "    RBAC failed: $($_.Exception.Message)" }
+    } catch { Write-Warning "    RBAC failed: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } "arm-$safe-rbac-ERROR.json" | Out-Null }
 
     try {
         $sql = Get-Arm "$base/providers/Microsoft.Sql/servers?api-version=2021-11-01"
@@ -43,7 +45,7 @@ foreach ($s in $subs) {
             $srv | Add-Member -NotePropertyName _firewallRules -NotePropertyValue $fw -Force
         }
         Save-Json $sql "arm-$safe-sql.json" | Out-Null
-    } catch { Write-Warning "    SQL failed: $($_.Exception.Message)" }
+    } catch { Write-Warning "    SQL failed: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } "arm-$safe-sql-ERROR.json" | Out-Null }
 
     try {
         $syn = Get-Arm "$base/providers/Microsoft.Synapse/workspaces?api-version=2021-06-01"
@@ -52,12 +54,12 @@ foreach ($s in $subs) {
             $w | Add-Member -NotePropertyName _firewallRules -NotePropertyValue $fw -Force
         }
         Save-Json $syn "arm-$safe-synapse.json" | Out-Null
-    } catch { Write-Warning "    Synapse failed: $($_.Exception.Message)" }
+    } catch { Write-Warning "    Synapse failed: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } "arm-$safe-synapse-ERROR.json" | Out-Null }
 
     try { Save-Json (Get-Arm "$base/providers/Microsoft.KeyVault/vaults?api-version=2022-07-01") "arm-$safe-keyvaults.json" | Out-Null }
-    catch { Write-Warning "    Key Vaults failed: $($_.Exception.Message)" }
+    catch { Write-Warning "    Key Vaults failed: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } "arm-$safe-keyvaults-ERROR.json" | Out-Null }
 
     try { Save-Json (Get-Arm "$base/providers/Microsoft.Network/networkSecurityGroups?api-version=2023-05-01") "arm-$safe-nsgs.json" | Out-Null }
-    catch { Write-Warning "    NSGs failed: $($_.Exception.Message)" }
+    catch { Write-Warning "    NSGs failed: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } "arm-$safe-nsgs-ERROR.json" | Out-Null }
 }
 Write-Host 'Azure sweep done.' -ForegroundColor Green
