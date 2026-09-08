@@ -39,8 +39,8 @@ This tool reads the configuration directly, so the findings are based on the liv
 # 1. get the code
 git clone https://github.com/erv718/d365-security-audit.git ; cd d365-security-audit
 
-# 2. configure
-copy .env.example .env
+# 2. configure  (macOS/Linux shells: cp .env.example .env)
+Copy-Item .env.example .env
 #    fill in TENANT_ID / CLIENT_ID / CLIENT_SECRET for your read-only app
 #    (docs/permissions.md lists the exact permissions)
 
@@ -85,8 +85,7 @@ A finding does not mean you were breached. It means that if something happened, 
 
 ## Roadmap
 
-- DLP policy pull (Power Platform admin API)
-- Purview / retention configuration
+- Purview / sensitivity-label coverage
 - HTML report output
 - Optional cross-check against a saved baseline
 

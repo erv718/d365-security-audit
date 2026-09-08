@@ -7,12 +7,13 @@
 . (Join-Path $PSScriptRoot '_common.ps1')
 
 $tok = Get-Token 'https://management.azure.com'
-if (-not $tok) { throw 'No Azure ARM token.' }
+if (-not $tok) { Write-Warning 'No Azure ARM token - skipping the Azure+ sweep; other steps still run.'; return }
 $H = @{ Authorization = "Bearer $tok" }
 function Get-Arm($url) { $i=@(); $n=$url; while($n){ $r=Invoke-RestMethod -Uri $n -Headers $H; if($r.value){$i+=$r.value}; $n=$r.nextLink }; return $i }
 
 $subsConf = (Get-Conf AZURE_SUBSCRIPTIONS) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$allSubs = Get-Arm 'https://management.azure.com/subscriptions?api-version=2022-12-01'
+try { $allSubs = Get-Arm 'https://management.azure.com/subscriptions?api-version=2022-12-01' }
+catch { Write-Warning "Could not list subscriptions: $($_.Exception.Message)"; return }
 $subs = if ($subsConf) { $allSubs | Where-Object { $subsConf -contains $_.subscriptionId } } else { $allSubs }
 Write-Host "Azure+: auditing $(@($subs).Count) subscription(s)" -ForegroundColor Cyan
 

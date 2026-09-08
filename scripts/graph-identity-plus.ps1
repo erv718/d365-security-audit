@@ -85,7 +85,7 @@ try {
 
 Write-Host 'Graph+: guests by home domain...' -ForegroundColor Cyan
 try {
-    $guests = Invoke-Paged "$G/users?`$filter=userType eq 'Guest'&`$select=userPrincipalName&`$top=999" $Hadv
+    $guests = Invoke-Paged "$G/users?`$filter=userType eq 'Guest'&`$select=userPrincipalName&`$top=999&`$count=true" $Hadv
     $domains = foreach ($u in $guests) {
         $upn = $u.userPrincipalName
         if (-not $upn) { continue }
