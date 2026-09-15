@@ -1,5 +1,9 @@
 # _common.ps1 - shared helpers. Dot-source this from the sweep scripts.
 # Read-only. No writes to any environment.
+#
+# Authentication: this tool signs in ONLY as a read-only app registration
+# (client credentials from .env). It never performs an interactive sign-in,
+# never shows a login prompt or device code, and never uses a person's account.
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -29,29 +33,29 @@ function Get-Conf {
     return $Default
 }
 
-# Get an OAuth token for a resource.
-# If CLIENT_ID + CLIENT_SECRET are set, uses the app registration (client credentials).
-# Otherwise falls back to Azure CLI (runs as the signed-in user - run `az login` first).
+# Get an OAuth token for a resource, as the read-only app registration.
+# Requires TENANT_ID + CLIENT_ID + CLIENT_SECRET in .env. There is deliberately no
+# fallback: no interactive sign-in, no device codes, no CLI sessions. Returns $null
+# (with a warning) if the app is not configured or the token request fails; every
+# sweep fails soft on a null token.
 function Get-Token {
     param([Parameter(Mandatory)][string]$Resource)
     $tenant = Get-Conf TENANT_ID
     $cid    = Get-Conf CLIENT_ID
     $sec    = Get-Conf CLIENT_SECRET
-    if ($cid -and $sec -and $tenant) {
-        try {
-            return (Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$tenant/oauth2/v2.0/token" -Body @{
-                client_id = $cid; client_secret = $sec
-                grant_type = 'client_credentials'; scope = "$Resource/.default"
-            }).access_token
-        } catch {
-            Write-Warning "App token for $Resource failed: $($_.Exception.Message)"
-            return $null
-        }
+    if (-not ($tenant -and $cid -and $sec)) {
+        Write-Warning "No app registration configured for $Resource. Set TENANT_ID, CLIENT_ID and CLIENT_SECRET in .env (see docs/permissions.md)."
+        return $null
     }
-    # delegated fallback
-    $t = az account get-access-token --resource $Resource --query accessToken -o tsv 2>$null
-    if (-not $t) { Write-Warning "No token for $Resource. Set CLIENT_ID/SECRET in .env or run 'az login'." }
-    return $t
+    try {
+        return (Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$tenant/oauth2/v2.0/token" -Body @{
+            client_id = $cid; client_secret = $sec
+            grant_type = 'client_credentials'; scope = "$Resource/.default"
+        }).access_token
+    } catch {
+        Write-Warning "App token for $Resource failed: $($_.Exception.Message)"
+        return $null
+    }
 }
 
 function Invoke-Paged {
@@ -62,7 +66,34 @@ function Invoke-Paged {
         if ($r.value) { $items += $r.value }
         $next = $r.$NextField
     }
-    return $items
+    # Comma keeps this an array even when empty; a bare empty array collapses to $null
+    # on return, which then blows up Save-Json downstream.
+    return ,$items
+}
+
+# Message for a failed web call: the HTTP status text plus the response body when the
+# service sent one. Graph, Dataverse and ARM put the actual reason there (the bad $select
+# field, the missing permission, the licence gap); Exception.Message alone only says "403".
+# Windows PowerShell exposes the body via ErrorDetails or the response stream, PowerShell 7
+# via ErrorDetails only, so both are tried.
+function Get-ErrorText {
+    param($ErrorRecord)
+    $msg = "$($ErrorRecord.Exception.Message)"
+    $body = $null
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $body = $ErrorRecord.ErrorDetails.Message
+    } elseif ($ErrorRecord.Exception.Response) {
+        try {
+            $stream = $ErrorRecord.Exception.Response.GetResponseStream()
+            if ($stream) { $body = (New-Object IO.StreamReader($stream)).ReadToEnd() }
+        } catch {}
+    }
+    if ($body) {
+        $body = ($body -replace '\s+', ' ').Trim()
+        if ($body.Length -gt 800) { $body = $body.Substring(0, 800) + '...' }
+        return "$msg $body"
+    }
+    return $msg
 }
 
 function Get-OutDir {
@@ -72,8 +103,10 @@ function Get-OutDir {
 }
 
 function Save-Json {
-    param([Parameter(Mandatory)]$Data, [Parameter(Mandatory)][string]$Name)
+    param($Data, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Data) { $Data = @() }   # never crash on an empty/absent result
     $path = Join-Path (Get-OutDir) $Name
-    $Data | ConvertTo-Json -Depth 12 | Out-File -Encoding utf8 $path
+    # -InputObject (not pipeline) so an empty array serialises to "[]" instead of nothing.
+    ConvertTo-Json -Depth 12 -InputObject $Data | Out-File -Encoding utf8 $path
     return $path
 }

@@ -19,7 +19,7 @@ Please do not include real tenant data, secrets, or `output/` contents in a repo
 ## Using it safely
 
 - Get written authorization before pointing it at any tenant you do not own.
-- Prefer running as yourself (`az login`) or a certificate over a stored client secret. If you use a secret, rotate it when you are done and delete one-time apps.
+- Prefer a certificate over a stored client secret. If you use a secret, rotate it when you are done and delete one-time apps.
 - Never commit `.env`. It is git-ignored by default; keep it that way.
 
 ## Supported versions

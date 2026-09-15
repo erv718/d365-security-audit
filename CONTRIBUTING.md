@@ -10,12 +10,12 @@ Thanks for helping. This is a read-only security audit tool, so there's one rule
 
 ## Adding a check or a module
 
-1. Dot-source `_common.ps1` first and reuse its helpers: `Get-Token`, `Invoke-Paged`, `Save-Json`, `Get-Conf`, `Get-OutDir`. Don't re-implement auth or paging.
+1. Dot-source `_common.ps1` first and reuse its helpers: `Get-Token`, `Invoke-Paged`, `Save-Json`, `Get-Conf`, `Get-OutDir`, `Get-ErrorText`. Don't re-implement auth or paging.
 2. Save raw evidence to `output/<name>.json`.
 3. New sweep? Add a `Step 'scripts/<name>.ps1'` line to `run-audit.ps1`.
 4. Maps to a Microsoft assessment check? Add the logic to `scripts/assessment-report.ps1`.
 5. Standalone technical finding? Add it to `scripts/analyze.ps1`.
-6. New permission needed? Document it in `docs/permissions.md` and `docs/setup.md`, and use the least-privilege read scope.
+6. New permission needed? Document it in `docs/permissions.md`, and use the least-privilege read scope.
 
 ## Before you open a PR
 
