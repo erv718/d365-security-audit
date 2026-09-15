@@ -2,6 +2,14 @@
 # Covers: authentication methods policy, security defaults, PIM eligible/active role
 # assignments, Intune compliance + device overview, named locations, guests by home domain.
 # Read-only. GET/paged reads only. Every area is isolated so one failure never stops the sweep.
+#
+# Endpoint -> application permission it needs (Microsoft Graph v1.0 reference, all read-only):
+#   policies/authenticationMethodsPolicy                Policy.Read.All (least-privileged alternative: Policy.Read.AuthenticationMethod)
+#   policies/identitySecurityDefaultsEnforcementPolicy  Policy.Read.All
+#   roleManagement/directory/role*ScheduleInstances     RoleManagement.Read.Directory
+#   deviceManagement/*                                  DeviceManagement*.Read.All, plus an Intune licence in the tenant
+# A 403 on any of these is a consent gap, not an endpoint problem; check-setup.ps1 probes each one
+# and the *-ERROR.json written here carries the service's own error body for the exact reason.
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 
@@ -18,9 +26,12 @@ Write-Host 'Graph+: authentication methods policy...' -ForegroundColor Cyan
 try {
     $amp = Invoke-RestMethod -Uri "$G/policies/authenticationMethodsPolicy" -Headers $H
     Save-Json $amp 'authentication-methods-policy.json' | Out-Null
+    $enabledMethods = @($amp.authenticationMethodConfigurations | Where-Object { $_.state -eq 'enabled' } | ForEach-Object { $_.id })
+    if ($enabledMethods.Count) { Write-Host "  enabled methods: $($enabledMethods -join ', ')" -ForegroundColor Yellow }
 } catch {
-    Write-Warning "Auth methods policy failed: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'authentication-methods-policy-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "Auth methods policy failed: $e"
+    Save-Json @{ error = $e; note = 'Needs Policy.Read.All (or Policy.Read.AuthenticationMethod) as an application permission with admin consent.' } 'authentication-methods-policy-ERROR.json' | Out-Null
 }
 
 Write-Host 'Graph+: security defaults...' -ForegroundColor Cyan
@@ -29,29 +40,35 @@ try {
     Save-Json $sd 'security-defaults.json' | Out-Null
     Write-Host "  security defaults enabled: $($sd.isEnabled)" -ForegroundColor Yellow
 } catch {
-    Write-Warning "Security defaults failed: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'security-defaults-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "Security defaults failed: $e"
+    Save-Json @{ error = $e; note = 'Needs Policy.Read.All as an application permission with admin consent.' } 'security-defaults-ERROR.json' | Out-Null
 }
+
+$pimNote = 'Needs RoleManagement.Read.Directory as an application permission with admin consent. If the error body says the tenant is not licensed (AadPremiumLicenseRequired), Entra ID P2 / PIM is not in use and every admin assignment is standing access.'
 
 Write-Host 'Graph+: PIM eligible role assignments...' -ForegroundColor Cyan
 try {
     $pimElig = Invoke-Paged "$G/roleManagement/directory/roleEligibilityScheduleInstances?`$expand=roleDefinition(`$select=displayName)" $H
     Save-Json $pimElig 'pim-eligible.json' | Out-Null
-    if (@($pimElig).Count -eq 0) { Write-Host '  0 eligible assignments - PIM likely not in use.' -ForegroundColor Yellow }
+    if (@($pimElig).Count -eq 0) { Write-Host '  0 eligible assignments - PIM not in use (all admin access is standing).' -ForegroundColor Yellow }
     else { Write-Host "  $(@($pimElig).Count) eligible assignments." -ForegroundColor Yellow }
 } catch {
-    Write-Warning "PIM eligible failed (403/empty implies PIM not in use / no P2): $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message; note = 'PIM likely not in use or Entra ID P2 not licensed.' } 'pim-eligible-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "PIM eligible failed: $e"
+    Save-Json @{ error = $e; note = $pimNote } 'pim-eligible-ERROR.json' | Out-Null
 }
 
-Write-Host 'Graph+: PIM active (permanent) role assignments...' -ForegroundColor Cyan
+Write-Host 'Graph+: PIM active (permanent + activated) role assignments...' -ForegroundColor Cyan
 try {
     $pimActive = Invoke-Paged "$G/roleManagement/directory/roleAssignmentScheduleInstances?`$expand=roleDefinition(`$select=displayName)" $H
     Save-Json $pimActive 'pim-active.json' | Out-Null
-    Write-Host "  $(@($pimActive).Count) active assignments." -ForegroundColor Yellow
+    $permanent = @($pimActive | Where-Object { "$($_.assignmentType)" -eq 'Assigned' -and -not $_.endDateTime }).Count
+    Write-Host "  $(@($pimActive).Count) active assignments ($permanent permanent)." -ForegroundColor Yellow
 } catch {
-    Write-Warning "PIM active failed: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'pim-active-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "PIM active failed: $e"
+    Save-Json @{ error = $e; note = $pimNote } 'pim-active-ERROR.json' | Out-Null
 }
 
 Write-Host 'Graph+: Intune device compliance policies...' -ForegroundColor Cyan
@@ -60,8 +77,9 @@ try {
     Save-Json $comp 'intune-compliance-policies.json' | Out-Null
     Write-Host "  $(@($comp).Count) compliance policies." -ForegroundColor Yellow
 } catch {
-    Write-Warning "Intune compliance policies need DeviceManagementConfiguration.Read.All: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'intune-compliance-policies-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "Intune compliance policies failed: $e"
+    Save-Json @{ error = $e; note = 'Needs DeviceManagementConfiguration.Read.All as an application permission with admin consent, and an active Intune licence in the tenant.' } 'intune-compliance-policies-ERROR.json' | Out-Null
 }
 
 Write-Host 'Graph+: Intune managed device overview...' -ForegroundColor Cyan
@@ -69,8 +87,9 @@ try {
     $devOv = Invoke-RestMethod -Uri "$G/deviceManagement/managedDeviceOverview" -Headers $H
     Save-Json $devOv 'intune-device-overview.json' | Out-Null
 } catch {
-    Write-Warning "Intune device overview failed: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'intune-device-overview-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "Intune device overview failed: $e"
+    Save-Json @{ error = $e; note = 'Needs DeviceManagementManagedDevices.Read.All as an application permission with admin consent, and an active Intune licence in the tenant.' } 'intune-device-overview-ERROR.json' | Out-Null
 }
 
 Write-Host 'Graph+: Conditional Access named locations...' -ForegroundColor Cyan
@@ -79,8 +98,9 @@ try {
     Save-Json $named 'ca-named-locations.json' | Out-Null
     Write-Host "  $(@($named).Count) named locations." -ForegroundColor Yellow
 } catch {
-    Write-Warning "Named locations need Policy.Read.All: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'ca-named-locations-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "Named locations need Policy.Read.All: $e"
+    Save-Json @{ error = $e } 'ca-named-locations-ERROR.json' | Out-Null
 }
 
 Write-Host 'Graph+: guests by home domain...' -ForegroundColor Cyan
@@ -104,8 +124,9 @@ try {
     Save-Json @{ total = @($guests).Count; byDomain = @($byDomain) } 'guests-by-domain.json' | Out-Null
     Write-Host "  $(@($guests).Count) guests across $(@($byDomain).Count) home domains." -ForegroundColor Yellow
 } catch {
-    Write-Warning "Guests by domain failed: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'guests-by-domain-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "Guests by domain failed: $e"
+    Save-Json @{ error = $e } 'guests-by-domain-ERROR.json' | Out-Null
 }
 
 Write-Host 'Graph+ identity sweep done.' -ForegroundColor Green

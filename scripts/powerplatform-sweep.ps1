@@ -1,6 +1,6 @@
 # powerplatform-sweep.ps1 - read-only pull of the Power Platform admin (BAP) plane.
-# Covers: environments (+ residency/region + Dataverse URL auto-discovery), DLP policies,
-# tenant settings.
+# Covers: environments (+ residency/region, security group, Managed Environment flag and
+# Dataverse URL auto-discovery), DLP (connector data) policies, tenant settings.
 #
 # ASSUMPTION: the app registration (CLIENT_ID) must be registered as a Power Platform
 # management application. That is a one-time setup step an admin runs elsewhere - this
@@ -22,6 +22,9 @@ $H = @{ Authorization = "Bearer $tok" }
 $Next = 'nextLink'
 
 # --- Environments (residency + Dataverse URL auto-discovery) -----------------
+# The payload already carries what the report needs: properties.isDefault, environmentSku,
+# linkedEnvironmentMetadata.securityGroupId (absent when no group is set) and
+# governanceConfiguration.protectionLevel ('Standard' = Managed Environment).
 Write-Host 'Power Platform: environments...' -ForegroundColor Cyan
 try {
     $envs = Invoke-Paged 'https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments?api-version=2020-10-01' $H $Next
@@ -38,27 +41,42 @@ try {
     }
     $skus = @($envs | Group-Object { $_.properties.environmentSku } | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '
     if ($skus) { Write-Host "    SKUs: $skus" -ForegroundColor Yellow }
+    $managed = @($envs | Where-Object { "$($_.properties.governanceConfiguration.protectionLevel)" -eq 'Standard' }).Count
+    $withSg  = @($envs | Where-Object { $_.properties.linkedEnvironmentMetadata.securityGroupId }).Count
+    Write-Host "    Managed Environments: $managed; with a security group: $withSg" -ForegroundColor Yellow
 } catch {
-    Write-Warning "  environments failed: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'pp-environments-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "  environments failed: $e"
+    Save-Json @{ error = $e; note = 'Register the app as a Power Platform management app: New-PowerAppManagementApp -ApplicationId <CLIENT_ID>.' } 'pp-environments-ERROR.json' | Out-Null
 }
 
-# --- DLP policies (v2 first, fall back to v1) --------------------------------
+# --- DLP (connector data) policies --------------------------------------------
+# Same route Microsoft's own admin module calls for Get-DlpPolicy:
+# PowerPlatform.Governance/v1/policies with api-version 2016-11-01 (the v2 path this
+# script used before is not what the module or the docs use). Zero policies is a real,
+# reportable result, so an empty list is saved as [] rather than treated as a failure.
 Write-Host 'Power Platform: DLP policies...' -ForegroundColor Cyan
 try {
-    $dlp = Invoke-Paged 'https://api.bap.microsoft.com/providers/PowerPlatform.Governance/v2/policies?api-version=2019-05-01' $H $Next
-    Save-Json $dlp 'pp-dlp-policies.json' | Out-Null
-    Write-Host "  DLP (v2): $($dlp.Count) policies" -ForegroundColor Yellow
-} catch {
-    Write-Warning "  DLP v2 failed: $($_.Exception.Message) - trying v1"
-    try {
-        $dlp = Invoke-Paged 'https://api.bap.microsoft.com/providers/PowerPlatform.Governance/v1/policies?api-version=2016-11-01' $H $Next
-        Save-Json $dlp 'pp-dlp-policies.json' | Out-Null
-        Write-Host "  DLP (v1): $($dlp.Count) policies" -ForegroundColor Yellow
-    } catch {
-        Write-Warning "  DLP v1 failed: $($_.Exception.Message)"
-        Save-Json @{ error = $_.Exception.Message } 'pp-dlp-policies-ERROR.json' | Out-Null
+    $dlp = @()
+    $next = 'https://api.bap.microsoft.com/providers/PowerPlatform.Governance/v1/policies?api-version=2016-11-01&$top=50'
+    while ($next) {
+        $r = Invoke-RestMethod -Uri $next -Headers $H
+        if ($null -eq $r) { $next = $null }
+        elseif ($r.PSObject.Properties.Name -contains 'value') {
+            $dlp += @($r.value)
+            $next = if ($r.nextLink) { $r.nextLink } elseif ($r.'@odata.nextLink') { $r.'@odata.nextLink' } else { $null }
+        } else {
+            # shape guard: a bare array/object is still saved as-is instead of being dropped
+            $dlp += @($r); $next = $null
+        }
     }
+    Save-Json $dlp 'pp-dlp-policies.json' | Out-Null
+    if ($dlp.Count -eq 0) { Write-Host '  0 DLP policies - no connector data policy exists in this tenant.' -ForegroundColor Yellow }
+    else { Write-Host "  DLP: $($dlp.Count) policies" -ForegroundColor Yellow }
+} catch {
+    $e = Get-ErrorText $_
+    Write-Warning "  DLP policies failed: $e"
+    Save-Json @{ error = $e; note = 'Needs the app registered as a Power Platform management app (New-PowerAppManagementApp).' } 'pp-dlp-policies-ERROR.json' | Out-Null
 }
 
 # --- Tenant settings (read-only listTenantSettings POST) ---------------------
@@ -68,8 +86,9 @@ try {
     Save-Json $ts 'pp-tenant-settings.json' | Out-Null
     Write-Host '  saved tenant settings' -ForegroundColor Green
 } catch {
-    Write-Warning "  tenant settings failed: $($_.Exception.Message)"
-    Save-Json @{ error = $_.Exception.Message } 'pp-tenant-settings-ERROR.json' | Out-Null
+    $e = Get-ErrorText $_
+    Write-Warning "  tenant settings failed: $e"
+    Save-Json @{ error = $e } 'pp-tenant-settings-ERROR.json' | Out-Null
 }
 
 Write-Host 'Power Platform sweep done.' -ForegroundColor Green

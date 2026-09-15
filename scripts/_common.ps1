@@ -71,6 +71,31 @@ function Invoke-Paged {
     return ,$items
 }
 
+# Message for a failed web call: the HTTP status text plus the response body when the
+# service sent one. Graph, Dataverse and ARM put the actual reason there (the bad $select
+# field, the missing permission, the licence gap); Exception.Message alone only says "403".
+# Windows PowerShell exposes the body via ErrorDetails or the response stream, PowerShell 7
+# via ErrorDetails only, so both are tried.
+function Get-ErrorText {
+    param($ErrorRecord)
+    $msg = "$($ErrorRecord.Exception.Message)"
+    $body = $null
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $body = $ErrorRecord.ErrorDetails.Message
+    } elseif ($ErrorRecord.Exception.Response) {
+        try {
+            $stream = $ErrorRecord.Exception.Response.GetResponseStream()
+            if ($stream) { $body = (New-Object IO.StreamReader($stream)).ReadToEnd() }
+        } catch {}
+    }
+    if ($body) {
+        $body = ($body -replace '\s+', ' ').Trim()
+        if ($body.Length -gt 800) { $body = $body.Substring(0, 800) + '...' }
+        return "$msg $body"
+    }
+    return $msg
+}
+
 function Get-OutDir {
     $dir = Join-Path (Split-Path $PSScriptRoot -Parent) 'output'
     New-Item -ItemType Directory -Force $dir | Out-Null

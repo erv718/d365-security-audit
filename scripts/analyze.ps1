@@ -41,6 +41,24 @@ if ($ca) {
     Add-Finding $(if($mfaEnforced.Count){'LOW'}else{'HIGH'}) 'Conditional Access' "$($ca.Count) CA policies; $($on.Count) enabled; $($mfaEnforced.Count) enabled policies require MFA."
 }
 
+# --- Legacy / basic authentication in the sign-in sample ---
+# clientAppUsed names Microsoft classes as legacy authentication (the Conditional Access
+# "Exchange ActiveSync clients" + "Other clients" categories). These protocols cannot do
+# MFA, so a CA policy that requires MFA silently does not apply to them - block them.
+$signins = Load 'signins-sample.json'
+if ($signins) {
+    $legacyRx = '^(Exchange ActiveSync|Authenticated SMTP|SMTP|Autodiscover|Exchange Online PowerShell|Exchange Web Services.*|IMAP4?|MAPI over HTTP.*|Offline Address Book.*|Outlook Anywhere.*|Outlook Service|POP3?|Reporting Web Services|Other clients)$'
+    $total  = @($signins).Count
+    $legacy = @($signins | Where-Object { $_.clientAppUsed -and "$($_.clientAppUsed)" -match $legacyRx })
+    if ($legacy.Count) {
+        $byClient = ($legacy | Group-Object clientAppUsed | Sort-Object Count -Descending | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '
+        $accounts = @($legacy | ForEach-Object { $_.userPrincipalName } | Where-Object { $_ } | Select-Object -Unique).Count
+        Add-Finding 'HIGH' 'Legacy auth' "$($legacy.Count) of $total sampled sign-ins used legacy/basic authentication ($byClient; $accounts account(s)). These protocols cannot do MFA - block them with a Conditional Access policy (client apps: Exchange ActiveSync + Other clients)."
+    } else {
+        Add-Finding 'LOW' 'Legacy auth' "0 of $total sampled sign-ins used legacy/basic authentication (sample = most recent interactive sign-ins only; confirm with the Entra 'Sign-ins using legacy authentication' workbook)."
+    }
+}
+
 # --- Guests ---
 $g = Load 'guest-count.json'
 if ($g) { Add-Finding 'MEDIUM' 'Guests' "$($g.guestCount) guest accounts tenant-wide. Confirm access reviews exist." }

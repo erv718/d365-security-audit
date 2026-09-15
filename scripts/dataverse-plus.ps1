@@ -1,13 +1,17 @@
 # dataverse-plus.ps1 - extra read-only per-environment Dataverse checks.
-# Covers: broader org security settings (auditing + user-access auditing + plugin trace),
-# email server profiles, queue + mailbox surface (server-side sync), and field-level
-# security usage (fieldpermissions).
+# Covers: broader org security settings (auditing + read-log auditing + user-access
+# auditing + plugin trace), email server profiles, queue + mailbox surface (server-side
+# sync), and field-level security usage (fieldpermissions).
 #
 # Environment URLs come from DATAVERSE_ENVIRONMENTS in .env (comma-separated) AND, if
 # present, from output/pp-environment-urls.json (auto-discovered by the Power Platform
 # sweep). The app must be an Application User with a read-only role in each environment.
 # Read-only. GET/paged reads only. Every environment and every query is isolated in its
 # own try/catch so one failure (missing license / no access) never stops the sweep.
+#
+# $select column names are verified against the Dataverse table references
+# (organization, emailserverprofile). One invalid column 400s the whole query and the
+# *-ERROR.json keeps the OData message that names it - 403 means no Application User.
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 
@@ -65,25 +69,27 @@ foreach ($url in $envs) {
 
             # --- Org security settings (broader) ---------------------------------
             try {
-                $org = Invoke-Paged "${base}organizations?`$select=name,isauditenabled,isuseraccessauditenabled,auditretentionperiodv2,plugintracelogsetting" $H
+                $org = Invoke-Paged "${base}organizations?`$select=name,isauditenabled,isuseraccessauditenabled,isreadauditenabled,auditretentionperiodv2,plugintracelogsetting" $H
                 Save-Json $org "dvplus-$safe-org-settings.json" | Out-Null
                 $o = @($org)[0]
                 if ($o) { $sumAudit = $o.isauditenabled }
             } catch {
-                Write-Warning "  [$safe] org-settings failed: $($_.Exception.Message)"
-                Save-Json @{ error = $_.Exception.Message } "dvplus-$safe-org-settings-ERROR.json" | Out-Null
+                $e = Get-ErrorText $_
+                Write-Warning "  [$safe] org-settings failed: $e"
+                Save-Json @{ error = $e } "dvplus-$safe-org-settings-ERROR.json" | Out-Null
             }
 
             # --- Email server profiles -------------------------------------------
             try {
-                # server type omitted from $select: the column name varies by version and an
-                # invalid $select field 400s the whole query - name alone is enough to inventory.
-                $profiles = Invoke-Paged "${base}emailserverprofiles?`$select=name" $H
+                # servertype + statecode are the documented columns (there is no 'type' column,
+                # which is what 400'd this query before). Annotations add the display labels.
+                $profiles = Invoke-Paged "${base}emailserverprofiles?`$select=name,servertype,statecode" $Hc
                 Save-Json $profiles "dvplus-$safe-emailprofiles.json" | Out-Null
                 $sumProfiles = @($profiles).Count
             } catch {
-                Write-Warning "  [$safe] emailprofiles failed: $($_.Exception.Message)"
-                Save-Json @{ error = $_.Exception.Message } "dvplus-$safe-emailprofiles-ERROR.json" | Out-Null
+                $e = Get-ErrorText $_
+                Write-Warning "  [$safe] emailprofiles failed: $e"
+                Save-Json @{ error = $e } "dvplus-$safe-emailprofiles-ERROR.json" | Out-Null
             }
 
             # --- Queues (count + small sample) -----------------------------------
@@ -93,8 +99,9 @@ foreach ($url in $envs) {
                 Save-Json ([ordered]@{ '@odata.count' = $cnt; sample = @($r.value) }) "dvplus-$safe-queues.json" | Out-Null
                 if ($null -ne $cnt) { $sumQueues = $cnt } else { $sumQueues = @($r.value).Count }
             } catch {
-                Write-Warning "  [$safe] queues failed: $($_.Exception.Message)"
-                Save-Json @{ error = $_.Exception.Message } "dvplus-$safe-queues-ERROR.json" | Out-Null
+                $e = Get-ErrorText $_
+                Write-Warning "  [$safe] queues failed: $e"
+                Save-Json @{ error = $e } "dvplus-$safe-queues-ERROR.json" | Out-Null
             }
 
             # --- Mailboxes (count + small sample) --------------------------------
@@ -104,8 +111,9 @@ foreach ($url in $envs) {
                 Save-Json ([ordered]@{ '@odata.count' = $cnt; sample = @($r.value) }) "dvplus-$safe-mailboxes.json" | Out-Null
                 if ($null -ne $cnt) { $sumMailbox = $cnt } else { $sumMailbox = @($r.value).Count }
             } catch {
-                Write-Warning "  [$safe] mailboxes failed: $($_.Exception.Message)"
-                Save-Json @{ error = $_.Exception.Message } "dvplus-$safe-mailboxes-ERROR.json" | Out-Null
+                $e = Get-ErrorText $_
+                Write-Warning "  [$safe] mailboxes failed: $e"
+                Save-Json @{ error = $e } "dvplus-$safe-mailboxes-ERROR.json" | Out-Null
             }
 
             # --- Field permissions (field-level security in use) -----------------
@@ -114,15 +122,17 @@ foreach ($url in $envs) {
                 Save-Json $fp "dvplus-$safe-fieldpermissions.json" | Out-Null
                 $sumFieldPrm = @($fp).Count
             } catch {
-                Write-Warning "  [$safe] fieldpermissions failed: $($_.Exception.Message)"
-                Save-Json @{ error = $_.Exception.Message } "dvplus-$safe-fieldpermissions-ERROR.json" | Out-Null
+                $e = Get-ErrorText $_
+                Write-Warning "  [$safe] fieldpermissions failed: $e"
+                Save-Json @{ error = $e } "dvplus-$safe-fieldpermissions-ERROR.json" | Out-Null
             }
 
             Write-Host "  [$safe] audit=$sumAudit emailProfiles=$sumProfiles queues=$sumQueues mailboxes=$sumMailbox fieldPerms=$sumFieldPrm" -ForegroundColor Yellow
         }
     } catch {
-        Write-Warning "  [$safe] failed: $($_.Exception.Message)"
-        Save-Json @{ error = $_.Exception.Message } "dvplus-$safe-ERROR.json" | Out-Null
+        $e = Get-ErrorText $_
+        Write-Warning "  [$safe] failed: $e"
+        Save-Json @{ error = $e } "dvplus-$safe-ERROR.json" | Out-Null
     }
 }
 
