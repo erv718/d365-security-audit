@@ -15,23 +15,37 @@ This tool reads the configuration directly, so the findings are based on the liv
 **Identity (Microsoft Graph)**
 - App registrations and expired / expiring client secrets and certificates
 - Service principals and which apps hold high-privilege tenant-wide permissions (all-mail, directory write, etc.)
-- Directory roles and how many hold Global Administrator
-- Conditional Access policies (how many exist, how many are enabled, whether any enforce MFA)
-- Guest account count (tenant-wide)
-- A sign-in sample (to spot MFA that a federated IdP performs but Entra does not record)
+- Directory roles and how many hold Global Administrator; PIM eligible (just-in-time) versus standing admin access
+- Conditional Access policies (how many exist, how many are enabled, whether any enforce MFA or a compliant device), security defaults, the authentication methods policy, named locations
+- Intune device compliance policies and the managed-device overview
+- Guest accounts: tenant-wide count and concentration by home domain
+- A sign-in sample: legacy/basic-auth protocols that bypass MFA (IMAP, POP, SMTP, Exchange ActiveSync, "other clients"), and MFA that a federated IdP performs but Entra does not record
+
+**Power Platform (admin API)**
+- Every environment: type, region, whether it has a Dataverse database, whether a security group restricts access, whether it is a Managed Environment
+- DLP (connector data) policies, and whether the default environment is covered by one
+- Tenant settings (for example default environment routing)
 
 **Data platform (Dataverse, per environment)**
-- Whether auditing is turned on (org level and per table)
+- Whether auditing is turned on (org level, user-access auditing, read-log auditing, retention) and per table
 - Security roles, and whether any custom roles exist or everything defaults to built-in ones
 - Solution inventory (managed vs unmanaged, and what sits in production)
-- Field security profiles
+- Field security profiles and field permissions
+- Email server profiles, mailboxes and queues (the server-side sync surface)
 
 **Cloud infrastructure (Azure ARM, per subscription)**
 - Role assignments, and how many hold Owner / User Access Administrator at subscription scope
-- SQL servers: public network access and "allow all Azure IPs" firewall rules
+- SQL servers: public network access, minimum TLS version, and "allow all Azure IPs" firewall rules
 - Synapse workspaces: firewall rules
 - Key Vaults: RBAC vs legacy access policies, and public network access
 - Network security groups: RDP/SSH rules open to the internet
+- Defender for Cloud plans (Standard vs Free), Log Analytics workspaces and Sentinel onboarding, activity-log diagnostic settings, Logic Apps
+
+**The assessment report**
+
+`output/assessment-report.md` maps the evidence to Microsoft's Power Platform and Dynamics 365 Security Review: 8 domains, 29 checks (28 unique; 2.5 is a template duplicate of 2.4). Every verdict is tied to an evidence file in `output/`. If that file is missing, the check reads **Not checked** and names the access that would unlock it; the tool never guesses. Checks no API can answer (incident response plan, Customer Lockbox, sensitivity labels, residency adequacy) are marked **MANUAL** with the exact portal path to confirm them.
+
+**Beyond the checklist**, the report and the findings add: Managed Environments coverage, default-environment DLP coverage, legacy/basic-auth detection in the sign-in sample, guest concentration by home domain, Defender for Cloud plan status, and PIM standing versus eligible admin access.
 
 ## Quick start
 
@@ -58,8 +72,9 @@ instructions instead of falling back to your account.
 Output lands in `./output` (git-ignored):
 - `*.json` - the raw evidence for each area
 - `FINDINGS-summary.json` - the ranked summary, also printed to the console
+- `assessment-report.md` - the pulls mapped to Microsoft's 8-domain / 29-check review, every verdict tied to its evidence file
 
-Run a single area with `-SkipGraph`, `-SkipDataverse`, or `-SkipAzure`.
+Run a single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
 
 ## Requirements
 

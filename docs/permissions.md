@@ -38,6 +38,19 @@ How to add them:
 4. Back on the API permissions page, click **Grant admin consent for (your org)** > Yes.
    The Status column must show green check marks. Without consent, every call returns 403.
 
+**Optional tightening.** Two of the seven are broader than the single call that needs them,
+and Microsoft publishes narrower alternatives for those calls:
+
+| Broad permission | Narrower alternative | Covers only |
+|---|---|---|
+| `Policy.Read.All` | `Policy.Read.AuthenticationMethod` | the authentication methods policy pull |
+| `RoleManagement.Read.Directory` | `RoleEligibilitySchedule.Read.Directory` + `RoleAssignmentSchedule.Read.Directory` | the two PIM pulls |
+
+The broad permissions are still required by other pulls in the same script (`Policy.Read.All`
+for Conditional Access, named locations and security defaults; `RoleManagement.Read.Directory`
+for directory roles and their members), so the list above is already the practical minimum.
+The alternatives are listed for admins who audit what each individual call needs.
+
 ## 3. Azure subscriptions (ARM)
 
 The app needs the **Reader** role on each subscription you want audited.
@@ -75,6 +88,12 @@ Install-Module Microsoft.PowerApps.Administration.PowerShell -Scope CurrentUser
 Add-PowerAppsAccount
 New-PowerAppManagementApp -ApplicationId <your CLIENT_ID>
 ```
+
+Note on the token audience, for troubleshooting only: the tool requests its Power Platform
+admin token for the audience `https://api.bap.microsoft.com` (verified working against a real
+tenant). Microsoft's own `Microsoft.PowerApps.Administration.PowerShell` module requests
+`https://service.powerapps.com` for the same endpoints. Both are accepted. If the environments
+or DLP pull ever returns 401 while the registration above is in place, this is the place to look.
 
 ## After you run it
 
