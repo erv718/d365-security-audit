@@ -142,3 +142,43 @@ confirm the verdict moves the way you expect.
   tenant after the trial lapses and the retention period ends.
 - `output/` from this tenant holds only fixture data, but treat it like any other run: do not
   commit it.
+
+## 9. Replicating a real environment shape
+
+`testdata/replicate-from-output.ps1` reads a saved audit output folder from a real tenant and
+rebuilds its structural shape in the dev tenant with dummy objects: the same number of app
+registrations, expired and expiring secrets, risky Graph application permissions, Conditional
+Access policies, named locations, guests per home domain, PIM eligible assignments, NSGs, SQL
+logical servers and Key Vaults, capped by `-MaxUsers`, `-MaxApps` and `-MaxAzurePerType`.
+
+The privacy contract is dummy-only. The script reads counts and states from the source
+folder, never names, UPNs, GUIDs, IPs, emails or domains. Every replica object is named by a
+counter (`SecAuditReplica-App-001`), guest domains become `fake1.example.com`,
+`fake2.example.com` and so on, and named locations use the documentation range
+203.0.113.0/24. The only source strings it repeats are Microsoft constants such as directory
+role names and environment SKUs.
+
+Run it in plan mode first. Without `-Force` it signs in to nothing and writes nothing: it
+prints the plan table and stops.
+
+```powershell
+# plan: read the saved folder, print the shape, change nothing
+./testdata/replicate-from-output.ps1 -SourceOutputDir C:\path\to\saved-output
+
+# build it in the dev tenant (device-code sign-in as its Global Administrator, then Azure)
+./testdata/replicate-from-output.ps1 -SourceOutputDir C:\path\to\saved-output -Force
+
+# audit the replica, then compare output/assessment-report.md with the source tenant's report
+./run-audit.ps1
+
+# see what would be deleted, then remove every SecAuditReplica-* object and the resource group
+./testdata/teardown-replica.ps1
+./testdata/teardown-replica.ps1 -Force
+```
+
+What a replica cannot reproduce: sign-in logs, Power Platform environments and Dataverse
+internals, Defender for Cloud plan tiers, mailboxes and queues. Graph refuses a secret with a
+past expiry, so the "expired" share is created as 1-day secrets and reads as expired from the
+next day. Conditional Access policies are created disabled, except one all-users MFA policy
+that excludes the signed-in admin; enable the rest by hand after review. Tear the replica
+down when the comparison is done; the dev tenant is throwaway, the replica is not free.
