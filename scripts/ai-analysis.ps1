@@ -12,10 +12,11 @@
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 
-$mode = "$(Get-Conf 'AI_ANALYSIS')".ToLower()
+$mode = "$(Get-Conf 'AI_ANALYSIS')".ToLower().Trim()
 if ($mode -ne 'local' -and $mode -ne 'api') { return }   # off / unset: nothing to do
 
-$scope = "$(Get-Conf 'AI_ANALYSIS_SCOPE')".ToLower(); if (-not $scope) { $scope = 'redacted' }
+$scope = "$(Get-Conf 'AI_ANALYSIS_SCOPE')".ToLower().Trim(); if (-not $scope) { $scope = 'redacted' }
+if ($scope -notin 'redacted', 'named', 'full') { Write-Warning "ai-analysis: unknown AI_ANALYSIS_SCOPE '$scope'; using 'redacted'."; $scope = 'redacted' }
 $out = Get-OutDir
 
 # --- gather the summaries (the small, high-signal files) ---
@@ -47,11 +48,22 @@ if ($scope -eq 'full') {
 }
 
 # --- redaction (default scope) ---
+# Best effort over the report and findings text: emails, IPs, GUIDs, tenant domains, quoted
+# names, and the name lists the report prints unquoted (environments without a security group,
+# SQL servers on old TLS, guest home domains, apps holding risky permissions, and the
+# [environment] prefix on the Dataverse findings).
 function Protect-Text([string]$t) {
+    $ml = [System.Text.RegularExpressions.RegexOptions]::Multiline
     $t = [regex]::Replace($t, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email>')
     $t = [regex]::Replace($t, '\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b', '<ip>')
     $t = [regex]::Replace($t, '\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b', '<guid>')
     $t = [regex]::Replace($t, "'[^']{1,80}'", "'<name>'")
+    $t = [regex]::Replace($t, '\b[A-Za-z0-9-]+\.onmicrosoft\.com\b', '<domain>')
+    $t = [regex]::Replace($t, '(Without one: ).*?(\. Fix:)', '$1<names>$2')
+    $t = [regex]::Replace($t, '(older TLS still accepted on: ).*?(\. Not verified)', '$1<names>$2')
+    $t = [regex]::Replace($t, '(top 3: ).*?(\. Confirm)', '$1<domains>$2')
+    $t = [regex]::Replace($t, '(\(tenant-wide\): ).*$', '$1<names>', $ml)
+    $t = [regex]::Replace($t, '\[[^\]\r\n]{1,80}\] (Dataverse auditing is OFF|Zero custom security roles)', '[<name>] $1')
     return $t
 }
 if ($scope -eq 'redacted') { $material = Protect-Text $material }
@@ -95,12 +107,12 @@ $apiHost = try { ([Uri]$url).Host } catch { $url }
 Write-Host ""
 Write-Host "AI analysis (api): sending the '$scope' findings to $apiHost." -ForegroundColor Yellow
 Write-Host "This is the ONLY thing the tool sends off-machine, and only because AI_ANALYSIS=api is set." -ForegroundColor Yellow
-$maxTok = "$(Get-Conf 'AI_MAX_TOKENS')"; if (-not $maxTok) { $maxTok = '4000' }
+$maxTok = "$(Get-Conf 'AI_MAX_TOKENS')".Trim(); if ($maxTok -notmatch '^\d+$') { $maxTok = '4000' }
 $body = @{ model = $model; max_tokens = [int]$maxTok; messages = @(
     @{ role = 'system'; content = $prompt }, @{ role = 'user'; content = $material }
 ) } | ConvertTo-Json -Depth 8
 try {
-    $resp = Invoke-RestMethod -Method Post -Uri $url -Headers @{ Authorization = "Bearer $key"; 'Content-Type' = 'application/json' } -Body $body
+    $resp = Invoke-RestMethod -Method Post -Uri $url -Headers @{ Authorization = "Bearer $key" } -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
     $answer = $resp.choices[0].message.content
     if (-not $answer) { Write-Warning "ai-analysis: empty response from $apiHost."; return }
     $p = Join-Path $out 'ai-analysis.md'

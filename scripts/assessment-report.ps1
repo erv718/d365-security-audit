@@ -4,15 +4,28 @@
 # Aligned / Partial / Gap / Not in use / Not checked / MANUAL, plus a "beyond the
 # checklist" section of deeper technical findings.
 #
-# Every verdict is tied to a file in ./output. When the evidence file is missing the
-# check is "Not checked" (with the access that unlocks it), never a guessed Gap or
+# Every verdict is tied to a file in ./output. When the evidence file is missing, empty or
+# unparseable, the check is "Not checked" (with the access that unlocks it), never a guessed Gap or
 # Aligned; the two platform facts (1.1, 3.1) say so in their evidence. MANUAL checks
 # carry the exact portal click-path. Read-only. Pure local processing.
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 $out = Get-OutDir
 
-function LJ($name)    { $p = Join-Path $out $name; if (Test-Path $p) { try { $r = Get-Content $p -Raw | ConvertFrom-Json; if ($null -eq $r) { Write-Output -NoEnumerate @() } else { Write-Output -NoEnumerate $r } } catch { $null } } }
+# LJ: load one evidence file. Missing, empty or unparseable = $null (the check reads "Not
+# checked"); a JSON [] stays an empty array (the check reads its zero verdict). -NoEnumerate
+# keeps arrays intact on return; callers assign first and only then wrap in @( ), because
+# @( ) around the call itself would nest the array (PowerShell 5.1 and 7).
+function LJ($name) {
+    $p = Join-Path $out $name
+    if (-not (Test-Path $p)) { return $null }
+    try {
+        $raw = Get-Content $p -Raw
+        if ([string]::IsNullOrWhiteSpace($raw)) { Write-Warning "assessment: $name is empty; treated as not read"; return $null }
+        $r = $raw | ConvertFrom-Json
+        if ($null -eq $r) { Write-Output -NoEnumerate @() } else { Write-Output -NoEnumerate $r }
+    } catch { Write-Warning "assessment: $name could not be parsed; treated as not read ($($_.Exception.Message))"; $null }
+}
 function LFiles($pat) { Get-ChildItem $out -Filter $pat -ErrorAction SilentlyContinue }
 function First($x)    { if ($null -eq $x) { return $null } if ($x -is [array]) { $x[0] } else { $x } }
 function Have($x)     { $null -ne $x }
@@ -66,8 +79,9 @@ $userAccessOn   = Cnt ($orgList | Where-Object { $_.isuseraccessauditenabled -eq
 $readAuditKnown = Cnt ($orgList | Where-Object { $_.PSObject.Properties.Name -contains 'isreadauditenabled' })
 $readAuditOn    = Cnt ($orgList | Where-Object { $_.isreadauditenabled -eq $true })
 
-$rolesFiles = @(LFiles 'dv-*-roles.json'); $rolesEnvN = $rolesFiles.Count; $customRoles = 0
-foreach ($f in $rolesFiles) { $customRoles += Cnt ((LJ $f.Name) | Where-Object { $_.ismanaged -eq $false }) }
+# Per-file loops count only files that parsed, so an unreadable file is "not read", never "zero".
+$rolesFiles = @(LFiles 'dv-*-roles.json'); $rolesEnvN = 0; $customRoles = 0
+foreach ($f in $rolesFiles) { $roles = LJ $f.Name; if ($null -eq $roles) { continue }; $rolesEnvN++; $customRoles += Cnt ($roles | Where-Object { $_.ismanaged -eq $false }) }
 
 $ca = LJ 'ca-policies.json'
 $caTotal     = Cnt $ca
@@ -118,18 +132,18 @@ if ((Have $ppTenant) -and $ppTenant.powerPlatform -and $ppTenant.powerPlatform.g
     if ($gov.PSObject.Properties.Name -contains 'enableDefaultEnvironmentRouting') { $routing = [bool]$gov.enableDefaultEnvironmentRouting }
 }
 
-$sentinelFiles = @(LFiles 'arm-*-sentinel.json'); $sentinelOn = $false; $wsN = 0
-foreach ($f in $sentinelFiles) { $s = LJ $f.Name; $wsN += Cnt $s; if ((Cnt ($s | Where-Object { $_.sentinelEnabled })) -gt 0) { $sentinelOn = $true } }
-$logicFiles = @(LFiles 'arm-*-logicapps.json'); $logicApps = 0
-foreach ($f in $logicFiles) { $logicApps += Cnt (LJ $f.Name) }
-$emailFiles = @(LFiles 'dvplus-*-emailprofiles.json'); $emailProfiles = 0
-foreach ($f in $emailFiles) { $emailProfiles += Cnt (LJ $f.Name) }
+$sentinelFiles = @(LFiles 'arm-*-sentinel.json'); $sentinelReadN = 0; $sentinelOn = $false; $wsN = 0
+foreach ($f in $sentinelFiles) { $s = LJ $f.Name; if ($null -eq $s) { continue }; $sentinelReadN++; $wsN += Cnt $s; if ((Cnt ($s | Where-Object { $_.sentinelEnabled })) -gt 0) { $sentinelOn = $true } }
+$logicFiles = @(LFiles 'arm-*-logicapps.json'); $logicReadN = 0; $logicApps = 0
+foreach ($f in $logicFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $logicReadN++; $logicApps += Cnt $x }
+$emailFiles = @(LFiles 'dvplus-*-emailprofiles.json'); $emailReadN = 0; $emailProfiles = 0
+foreach ($f in $emailFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $emailReadN++; $emailProfiles += Cnt $x }
 $mailboxFiles = @(LFiles 'dvplus-*-mailboxes.json'); $mailboxN = 0
 foreach ($f in $mailboxFiles) { $m = First (LJ $f.Name); if ($m -and $null -ne $m.'@odata.count') { $mailboxN += [int]$m.'@odata.count' } elseif ($m) { $mailboxN += Cnt $m.sample } }
 $queueFiles = @(LFiles 'dvplus-*-queues.json'); $queueN = 0
 foreach ($f in $queueFiles) { $q = First (LJ $f.Name); if ($q -and $null -ne $q.'@odata.count') { $queueN += [int]$q.'@odata.count' } elseif ($q) { $queueN += Cnt $q.sample } }
-$fpFiles = @(LFiles 'dvplus-*-fieldpermissions.json') + @(LFiles 'dv-*-fieldsec.json'); $fieldPerms = 0
-foreach ($f in $fpFiles) { $fieldPerms += Cnt (LJ $f.Name) }
+$fpFiles = @(LFiles 'dvplus-*-fieldpermissions.json') + @(LFiles 'dv-*-fieldsec.json'); $fpReadN = 0; $fieldPerms = 0
+foreach ($f in $fpFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $fpReadN++; $fieldPerms += Cnt $x }
 
 $expiredSecrets = 0
 if (Have $apps) {
@@ -140,9 +154,12 @@ if (Have $apps) {
 # Defender for Cloud plans. Only plan names documented in the Pricings API are judged; other
 # names on Standard tier (e.g. FoundationalCspm, which is always on and free) are listed, not counted.
 $defDocumented = @('VirtualMachines','SqlServers','AppServices','StorageAccounts','SqlServerVirtualMachines','KubernetesService','ContainerRegistry','KeyVaults','Dns','Arm','OpenSourceRelationalDatabases','CosmosDbs','Containers','CloudPosture','Api','AI')
-$defFiles = @(LFiles 'arm-*-defender-pricings.json'); $defStd = @(); $defFree = @(); $defOther = @()
+$defFiles = @(LFiles 'arm-*-defender-pricings.json'); $defReadN = 0; $defStd = @(); $defFree = @(); $defOther = @()
 foreach ($f in $defFiles) {
-    foreach ($p in @(LJ $f.Name)) {
+    $plans = LJ $f.Name
+    if ($null -eq $plans) { continue }
+    $defReadN++
+    foreach ($p in @($plans)) {
         if (-not $p.name) { continue }
         $std = ("$($p.properties.pricingTier)" -eq 'Standard')
         if ($defDocumented -contains $p.name) { if ($std) { $defStd += $p.name } else { $defFree += $p.name } }
@@ -153,7 +170,7 @@ $defStd   = @($defStd | Select-Object -Unique)
 $defFree  = @($defFree | Where-Object { $defStd -notcontains $_ } | Select-Object -Unique)
 $defOther = @($defOther | Select-Object -Unique)
 
-$sqlServers = @(); foreach ($f in @(LFiles 'arm-*-sql.json')) { $sqlServers += @(LJ $f.Name | Where-Object { $_ }) }
+$sqlServers = @(); foreach ($f in @(LFiles 'arm-*-sql.json')) { $srvs = LJ $f.Name; if ($null -eq $srvs) { continue }; $sqlServers += @($srvs | Where-Object { $_ }) }
 $sqlN = $sqlServers.Count
 $sqlTlsWeak  = @($sqlServers | Where-Object { $v = "$($_.properties.minimalTlsVersion)"; $v -and ($v -notin '1.2','1.3') })
 $sqlTlsUnset = Cnt ($sqlServers | Where-Object { -not "$($_.properties.minimalTlsVersion)" })
@@ -256,13 +273,13 @@ if ($envN -eq 0) { $s34 = 'Not checked'; $e34 = 'Dataverse org settings not read
 elseif ($retentionSet -gt 0) { $s34 = 'Partial'; $e34 = "Audit retention set in $retentionSet of $envN environment(s); broader retention to confirm in Purview (purview.microsoft.com > Solutions > Data Lifecycle Management)." }
 else { $s34 = 'Gap'; $e34 = "Audit retention set in 0 of $envN environment(s) (PPAC > Manage > Environments > (env) > Settings > Audit and logs > Audit settings > Retain these logs for)." }
 Chk '3.4' '3 Data security' 'Data retention' $s34 $e34
-if ($emailFiles.Count -eq 0) { $s35 = 'Not checked'; $e35 = 'Email server profiles not read (no environment reachable as an Application User).' }
-elseif ($emailProfiles -gt 0) { $s35 = 'Partial'; $e35 = "$emailProfiles email server profile(s) across $($emailFiles.Count) environment(s); server-side sync auth (OAuth vs basic) to confirm per profile." }
-else { $s35 = 'Not in use'; $e35 = "0 email server profiles in $($emailFiles.Count) environment(s)." }
+if ($emailReadN -eq 0) { $s35 = 'Not checked'; $e35 = 'Email server profiles not read (no environment reachable as an Application User).' }
+elseif ($emailProfiles -gt 0) { $s35 = 'Partial'; $e35 = "$emailProfiles email server profile(s) across $($emailReadN) environment(s); server-side sync auth (OAuth vs basic) to confirm per profile." }
+else { $s35 = 'Not in use'; $e35 = "0 email server profiles in $($emailReadN) environment(s)." }
 Chk '3.5' '3 Data security' 'Record sync / Outlook' $s35 $e35
-if ($emailFiles.Count -eq 0) { $s36 = 'Not checked'; $e36 = 'Mailboxes/queues not read (no environment reachable as an Application User).' }
-elseif ($emailProfiles -le $emailFiles.Count) { $s36 = 'Not in use'; $e36 = "Only the default email profile per environment ($emailProfiles across $($emailFiles.Count)); $mailboxN mailbox record(s), $queueN queue(s) - no custom mailbox integration in active use." }
-else { $s36 = 'Partial'; $e36 = "$emailProfiles email profiles across $($emailFiles.Count) environment(s) (more than the default), $mailboxN mailbox record(s), $queueN queue(s); review which integrations are approved." }
+if ($emailReadN -eq 0) { $s36 = 'Not checked'; $e36 = 'Mailboxes/queues not read (no environment reachable as an Application User).' }
+elseif ($emailProfiles -le $emailReadN) { $s36 = 'Not in use'; $e36 = "Only the default email profile per environment ($emailProfiles across $($emailReadN)); $mailboxN mailbox record(s), $queueN queue(s) - no custom mailbox integration in active use." }
+else { $s36 = 'Partial'; $e36 = "$emailProfiles email profiles across $($emailReadN) environment(s) (more than the default), $mailboxN mailbox record(s), $queueN queue(s); review which integrations are approved." }
 Chk '3.6' '3 Data security' 'Mailbox / queue integration' $s36 $e36
 
 # Domain 4 - Auditing & monitoring
@@ -278,9 +295,9 @@ if ($envN -gt 0) {
     $e42 += ' environment(s).'
 }
 Chk '4.2' '4 Auditing' 'Events / user activity logged' $(if($envN -eq 0){'Not checked'}elseif($auditOn -eq 0){'Gap'}else{'Partial'}) $e42
-if ($sentinelFiles.Count -eq 0) { $s43 = 'Not checked'; $e43 = 'Azure Log Analytics/Sentinel not read (needs Reader on the subscriptions).' }
+if ($sentinelReadN -eq 0) { $s43 = 'Not checked'; $e43 = 'Azure Log Analytics/Sentinel not read (needs Reader on the subscriptions).' }
 elseif ($sentinelOn) { $s43 = 'Partial'; $e43 = "Sentinel enabled on at least one of $wsN Log Analytics workspace(s); whether Power Platform/Dataverse logs are ingested is not verified." }
-else { $s43 = 'Gap'; $e43 = "No Sentinel onboarding on $wsN Log Analytics workspace(s) across $($sentinelFiles.Count) subscription(s)." }
+else { $s43 = 'Gap'; $e43 = "No Sentinel onboarding on $wsN Log Analytics workspace(s) across $($sentinelReadN) subscription(s)." }
 Chk '4.3' '4 Auditing' 'SIEM / monitoring over Power Platform' $s43 $e43
 Chk '4.4' '4 Auditing' 'Purview / Sentinel integration' $(if($sentinelOn){'Partial'}else{'Not checked'}) $(if($sentinelOn){'Sentinel state read; Purview audit to confirm: purview.microsoft.com > Solutions > Audit.'}else{'Sentinel not found or not read; Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit.'})
 
@@ -289,9 +306,9 @@ if ($rolesEnvN -eq 0) { $s51 = 'Not checked'; $e51 = 'Security roles not read: s
 elseif ($customRoles -eq 0) { $s51 = 'Gap'; $e51 = "0 custom roles in $rolesEnvN environment(s) read - only built-in roles available to assign." }
 else { $s51 = 'Partial'; $e51 = "$customRoles custom role(s) in $rolesEnvN environment(s) read; privilege depth per role to review." }
 Chk '5.1' '5 Security settings' 'Security role design' $s51 $e51
-if ($fpFiles.Count -eq 0) { $s52 = 'Not checked'; $e52 = 'Field security profiles/permissions not read (no environment reachable as an Application User).' }
-elseif ($fieldPerms -gt 0) { $s52 = 'Partial'; $e52 = "$fieldPerms field-security permission(s)/profile(s) across $($fpFiles.Count) file(s); business-unit and record-level design to review." }
-else { $s52 = 'Gap'; $e52 = "0 field-security permissions/profiles in $($fpFiles.Count) environment(s) read - no column-level security in use." }
+if ($fpReadN -eq 0) { $s52 = 'Not checked'; $e52 = 'Field security profiles/permissions not read (no environment reachable as an Application User).' }
+elseif ($fieldPerms -gt 0) { $s52 = 'Partial'; $e52 = "$fieldPerms field-security permission(s)/profile(s) across $($fpReadN) file(s); business-unit and record-level design to review." }
+else { $s52 = 'Gap'; $e52 = "0 field-security permissions/profiles in $($fpReadN) environment(s) read - no column-level security in use." }
 Chk '5.2' '5 Security settings' 'Field-level / record / BU security' $s52 $e52
 $dlpN = Cnt $dlp
 if (-not (Have $dlp)) { $s53 = 'Not checked'; $e53 = 'DLP policies not read (needs the app registered as a Power Platform management app: New-PowerAppManagementApp).' }
@@ -303,19 +320,23 @@ else {
 Chk '5.3' '5 Security settings' 'DLP / IRM / classification' $s53 $e53
 
 # Domain 6 - Integration security
-Chk '6.1' '6 Integration' 'External integration security' $(if($logicFiles.Count -eq 0){'Not checked'}else{'Partial'}) $(if($logicFiles.Count -eq 0){'Logic Apps not read (needs Reader on the subscriptions).'}else{"$logicApps Logic App workflow(s) inventoried across $($logicFiles.Count) subscription(s); per-integration auth to review."})
+Chk '6.1' '6 Integration' 'External integration security' $(if($logicReadN -eq 0){'Not checked'}else{'Partial'}) $(if($logicReadN -eq 0){'Logic Apps not read (needs Reader on the subscriptions).'}else{"$logicApps Logic App workflow(s) inventoried across $($logicReadN) subscription(s); per-integration auth to review."})
 Chk '6.2' '6 Integration' 'API keys / credentials / tokens' $(if(-not (Have $apps)){'Not checked'}elseif($expiredSecrets -gt 0){'Gap'}else{'Partial'}) $(if(-not (Have $apps)){'App credentials not read (needs Application.Read.All with admin consent).'}else{"$expiredSecrets expired app credential(s) still present across $(Cnt $apps) app registrations; secret rotation/vaulting practice to confirm."})
 
 # Domain 7 - Incident response
 Chk '7.1' '7 Incident response' 'Incident response plan' 'MANUAL' 'A document/process - no API can confirm it exists. Collect: the written IR plan, named owners for Entra / Power Platform / Azure incidents, and the last exercise date. Check alerts are being worked: Microsoft Defender portal (security.microsoft.com) > Incidents & alerts.'
 $defPath = 'Azure portal > Microsoft Defender for Cloud > Environment settings > (subscription) > Defender plans'
-if ($defFiles.Count -eq 0) { $s72 = 'MANUAL'; $e72 = "Defender for Cloud plans not read (needs Reader on the subscriptions). Confirm at $defPath; the pen-test program itself is a process to confirm manually." }
-elseif ($defStd.Count -gt 0) { $s72 = 'Partial'; $e72 = "Defender for Cloud plans on Standard tier in $($defFiles.Count) subscription(s) read: $($defStd -join ', ')$(if($defFree.Count){"; still Free: $($defFree -join ', ')"})$(if($defOther.Count){"; other Standard entries not counted: $($defOther -join ', ')"}). Partial proxy only - vulnerability scanning covers those workloads; a pen-test program is a manual confirmation." }
-else { $s72 = 'MANUAL'; $e72 = "All $($defFree.Count) documented Defender for Cloud plans are on the Free tier in $($defFiles.Count) subscription(s) read$(if($defOther.Count){" (Standard entries not counted: $($defOther -join ', '))"}) - no paid vulnerability scanning. Enable at $defPath; confirm the pen-test program manually." }
+if ($defReadN -eq 0) { $s72 = 'MANUAL'; $e72 = "Defender for Cloud plans not read (needs Reader on the subscriptions). Confirm at $defPath; the pen-test program itself is a process to confirm manually." }
+elseif ($defStd.Count -gt 0) { $s72 = 'Partial'; $e72 = "Defender for Cloud plans on Standard tier in $($defReadN) subscription(s) read: $($defStd -join ', ')$(if($defFree.Count){"; still Free: $($defFree -join ', ')"})$(if($defOther.Count){"; other Standard entries not counted: $($defOther -join ', ')"}). Partial proxy only - vulnerability scanning covers those workloads; a pen-test program is a manual confirmation." }
+else { $s72 = 'MANUAL'; $e72 = "All $($defFree.Count) documented Defender for Cloud plans are on the Free tier in $($defReadN) subscription(s) read$(if($defOther.Count){" (Standard entries not counted: $($defOther -join ', '))"}) - no paid vulnerability scanning. Enable at $defPath; confirm the pen-test program manually." }
 Chk '7.2' '7 Incident response' 'Vulnerability scanning / pen testing' $s72 $e72
 
 # Domain 8 - Compliance
-Chk '8.1' '8 Compliance' 'Data sovereignty / residency' 'MANUAL' $(if($regions){"Environment region(s): $regions. Whether that satisfies your obligations is a legal call. Confirm: PPAC > Manage > Environments (Region column); M365 admin center (admin.microsoft.com) > Settings > Org settings > Organization profile > Data location."}else{'Region not read (Power Platform admin API); residency adequacy is a legal call. Confirm: PPAC > Manage > Environments (Region column); M365 admin center (admin.microsoft.com) > Settings > Org settings > Organization profile > Data location.'})
+$e81Path = 'Confirm: PPAC > Manage > Environments (Region column); M365 admin center (admin.microsoft.com) > Settings > Org settings > Organization profile > Data location.'
+if ($regions) { $e81 = "Environment region(s): $regions. Whether that satisfies your obligations is a legal call. $e81Path" }
+elseif (Have $ppEnv) { $e81 = "Environment inventory read but it lists no environment with a region; residency adequacy is a legal call. $e81Path" }
+else { $e81 = "Region not read (Power Platform admin API); residency adequacy is a legal call. $e81Path" }
+Chk '8.1' '8 Compliance' 'Data sovereignty / residency' 'MANUAL' $e81
 
 # ---------- output ----------
 $order  = @{ 'Gap'=0; 'Not in use'=1; 'Partial'=2; 'Not checked'=3; 'MANUAL'=4; 'Aligned'=5 }

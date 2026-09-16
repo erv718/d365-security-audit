@@ -23,9 +23,10 @@ Everything here is **read-only**, and it must stay that way.
 
 - Never add code, commands, or steps that write to, change, or delete anything in a tenant.
   No config changes, no role or policy edits, no mutating POST/PATCH/PUT/DELETE. The scripts
-  issue GET and read-only list/count calls only. The two POSTs that exist are the OAuth token
-  request and the Power Platform `listTenantSettings` call, which reads settings. If you edit
-  a script, keep it read-only.
+  issue GET and read-only list/count calls only. The two tenant POSTs that exist are the OAuth
+  token request and the Power Platform `listTenantSettings` call, which reads settings; the
+  opt-in `ai-analysis.ps1` POST goes to an AI endpoint the user chose, never to the tenant.
+  If you edit a script, keep it read-only.
 - If the user asks you to "fix" a finding, explain the remediation and where they would change
   it, but do not make the change against their tenant from here. This is a reporting tool, not
   a remediation tool.
@@ -369,7 +370,8 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   them to an external service. The point of this tool is that nothing leaves the tenant.
   The one exception is explicit opt-in: `AI_ANALYSIS=api` in `.env` sends the scoped findings
   summary to an AI endpoint the user configured (off by default; `local` mode sends nothing;
-  `redacted` scope masks emails, IPs, GUIDs and names). Respect that boundary when advising.
+  `redacted` scope masks emails, IPs, GUIDs, tenant domains and the names the report prints,
+  on a best-effort pattern basis). Respect that boundary when advising.
 - If a client secret was used, remind the user to rotate it and to delete a one-time app when
   the audit is done.
 - For development and testing, use a clean-room tenant you own rather than an employer's

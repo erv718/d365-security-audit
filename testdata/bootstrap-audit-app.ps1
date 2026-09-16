@@ -259,7 +259,7 @@ if ($sp -and $graphSp -and $roleIds.Count -gt 0) {
 $secret = $null
 if ($app) {
     Write-Host "Graph: client secret ($SecretDays days)..." -ForegroundColor Cyan
-    $existingSecrets = @($app.passwordCredentials).Count
+    $existingSecrets = @($app.passwordCredentials | Where-Object { $_ }).Count
     if ($existingSecrets -gt 0) { Write-Host "  $existingSecrets existing secret(s) left in place; a new one is added because their values cannot be read back" -ForegroundColor Yellow }
     try {
         $end = (Get-Date).ToUniversalTime().AddDays($SecretDays).ToString('yyyy-MM-ddTHH:mm:ssZ')

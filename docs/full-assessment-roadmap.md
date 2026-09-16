@@ -11,8 +11,10 @@ template, so it mirrors 2.4's verdict and is left out of the tally.
 ## Rules that apply to every check
 
 - A verdict is only ever computed from a file in `output/`. If the file is missing because
-  the pull failed or was skipped, the check is **Not checked** and the evidence column names
-  the access that unlocks it. The tool never guesses a Gap or an Aligned.
+  the pull failed or was skipped, or it is empty or cannot be parsed, the check is
+  **Not checked** and the evidence column names the access that unlocks it. A file holding
+  `[]` is a real zero result and gets the zero verdict. The tool never guesses a Gap or an
+  Aligned.
 - **MANUAL** means no API can answer it. The evidence column gives the exact portal path.
 - 1.1 and 3.1 are platform facts (Entra is the only identity provider for D365 online;
   Dataverse encrypts at rest and in transit). Their evidence says so and lists what was

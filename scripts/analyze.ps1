@@ -3,7 +3,19 @@
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 $out = Get-OutDir
-function Load($name) { $p = Join-Path $out $name; if (Test-Path $p) { Get-Content $p -Raw | ConvertFrom-Json } }
+# Load: missing, empty or unparseable = $null (skipped with a warning, never aborts the run); a
+# JSON [] stays an empty array. -NoEnumerate keeps arrays intact on return; callers assign first
+# and only then wrap in @( ), because @( ) around the call itself would nest the array.
+function Load($name) {
+    $p = Join-Path $out $name
+    if (-not (Test-Path $p)) { return $null }
+    try {
+        $raw = Get-Content $p -Raw
+        if ([string]::IsNullOrWhiteSpace($raw)) { Write-Warning "analyze: $name is empty; skipped"; return $null }
+        $r = $raw | ConvertFrom-Json
+        if ($null -eq $r) { Write-Output -NoEnumerate @() } else { Write-Output -NoEnumerate $r }
+    } catch { Write-Warning "analyze: $name could not be parsed; skipped ($($_.Exception.Message))"; $null }
+}
 $today = Get-Date
 $findings = @()
 function Add-Finding($sev, $area, $text) { $script:findings += [pscustomobject]@{ Severity=$sev; Area=$area; Finding=$text } }
@@ -29,16 +41,21 @@ if ($defs -and $asn) {
     $risky = 'Mail.Read','Mail.ReadWrite','Mail.Send','Directory.ReadWrite.All','Application.ReadWrite.All','RoleManagement.ReadWrite.Directory','User.ReadWrite.All','Files.ReadWrite.All','Sites.FullControl.All','full_access_as_app'
     $map = @{}; $defs | ForEach-Object { $map[$_.id] = $_.value }
     $hits = @{}
-    foreach ($m in $asn) { $rn = $map[$m.appRoleId]; if ($risky -contains $rn) { if(-not $hits[$rn]){$hits[$rn]=@()}; $hits[$rn]+=$m.principalDisplayName } }
+    foreach ($m in $asn) { if (-not $m.appRoleId) { continue }; $rn = $map["$($m.appRoleId)"]; if ($risky -contains $rn) { if(-not $hits[$rn]){$hits[$rn]=@()}; $hits[$rn]+=$m.principalDisplayName } }
     foreach ($r in $hits.Keys) { Add-Finding 'HIGH' 'App access' "$($hits[$r].Count) app(s) hold $r (tenant-wide): $((($hits[$r] | Select-Object -Unique) -join ', '))" }
 }
 
 # --- Conditional Access ---
+# A file holding [] means the tenant has zero policies: that is a finding, not a missing pull.
+# Security defaults (when read) soften the severity: they enforce baseline MFA on their own.
 $ca = Load 'ca-policies.json'
-if ($ca) {
+$sd = Load 'security-defaults.json'
+$sdOn = ($null -ne $sd -and $sd.isEnabled -eq $true)
+if ($null -ne $ca) {
     $on = @($ca | Where-Object { $_.state -eq 'enabled' })
     $mfaEnforced = @($ca | Where-Object { $_.state -eq 'enabled' -and $_.grantControls.builtInControls -contains 'mfa' })
-    Add-Finding $(if($mfaEnforced.Count){'LOW'}else{'HIGH'}) 'Conditional Access' "$($ca.Count) CA policies; $($on.Count) enabled; $($mfaEnforced.Count) enabled policies require MFA."
+    $sev = 'HIGH'; if ($mfaEnforced.Count -gt 0 -or $sdOn) { $sev = 'LOW' }
+    Add-Finding $sev 'Conditional Access' "$(@($ca).Count) CA policies; $($on.Count) enabled; $($mfaEnforced.Count) enabled policies require MFA$(if($sdOn){'; security defaults ON (baseline MFA for everyone)'})."
 }
 
 # --- Legacy / basic authentication in the sign-in sample ---
@@ -61,7 +78,11 @@ if ($signins) {
 
 # --- Guests ---
 $g = Load 'guest-count.json'
-if ($g) { Add-Finding 'MEDIUM' 'Guests' "$($g.guestCount) guest accounts tenant-wide. Confirm access reviews exist." }
+if ($null -ne $g -and $null -ne $g.guestCount) {
+    $gn = 0; try { $gn = [int]$g.guestCount } catch {}
+    if ($gn -gt 0) { Add-Finding 'MEDIUM' 'Guests' "$gn guest accounts tenant-wide. Confirm access reviews exist." }
+    else { Add-Finding 'LOW' 'Guests' '0 guest accounts tenant-wide.' }
+}
 
 # --- Directory roles ---
 $dr = Load 'directoryRoles.json'
@@ -70,21 +91,23 @@ if ($dr) { $ga = ($dr | Where-Object { $_.role -eq 'Global Administrator' }).mem
 # --- Dataverse per environment ---
 Get-ChildItem $out -Filter 'dv-*-org.json' | ForEach-Object {
     $envName = ($_.BaseName -replace '^dv-' -replace '-org$')
-    $org = (Get-Content $_.FullName -Raw | ConvertFrom-Json) | Select-Object -First 1
-    if ($org.isauditenabled -eq $false) { Add-Finding 'HIGH' 'Auditing' "[$envName] Dataverse auditing is OFF - no record of who changes data." }
+    $orgs = Load $_.Name; $org = @($orgs)[0]
+    if ($org -and $org.isauditenabled -eq $false) { Add-Finding 'HIGH' 'Auditing' "[$envName] Dataverse auditing is OFF - no record of who changes data." }
     $roles = Load "dv-$envName-roles.json"
-    if ($roles) { $custom = @($roles | Where-Object { $_.ismanaged -eq $false }).Count; if ($custom -eq 0) { Add-Finding 'MEDIUM' 'Roles' "[$envName] Zero custom security roles - only built-in roles available to assign." } }
+    if ($null -ne $roles) { $custom = @($roles | Where-Object { $_.ismanaged -eq $false }).Count; if ($custom -eq 0) { Add-Finding 'MEDIUM' 'Roles' "[$envName] Zero custom security roles - only built-in roles available to assign." } }
 }
 
 # --- Azure network ---
 Get-ChildItem $out -Filter 'arm-*-sql.json' | ForEach-Object {
-    foreach ($srv in (Get-Content $_.FullName -Raw | ConvertFrom-Json)) {
+    $items = Load $_.Name
+    foreach ($srv in @($items | Where-Object { $_ })) {
         if ($srv.properties.publicNetworkAccess -eq 'Enabled') { Add-Finding 'HIGH' 'Network' "SQL server '$($srv.name)' has public network access enabled." }
         if (@($srv._firewallRules | Where-Object { $_.properties.startIpAddress -eq '0.0.0.0' -and $_.properties.endIpAddress -eq '0.0.0.0' }).Count) { Add-Finding 'HIGH' 'Network' "SQL server '$($srv.name)' allows all Azure IPs (0.0.0.0)." }
     }
 }
 Get-ChildItem $out -Filter 'arm-*-nsgs.json' | ForEach-Object {
-    foreach ($nsg in (Get-Content $_.FullName -Raw | ConvertFrom-Json)) {
+    $items = Load $_.Name
+    foreach ($nsg in @($items | Where-Object { $_ })) {
         foreach ($rule in $nsg.properties.securityRules) {
             $p = $rule.properties
             if ($p.access -eq 'Allow' -and $p.direction -eq 'Inbound' -and $p.destinationPortRange -in '3389','22','*' -and $p.sourceAddressPrefix -in '*','0.0.0.0/0','Internet') {
@@ -94,7 +117,8 @@ Get-ChildItem $out -Filter 'arm-*-nsgs.json' | ForEach-Object {
     }
 }
 Get-ChildItem $out -Filter 'arm-*-keyvaults.json' | ForEach-Object {
-    foreach ($v in (Get-Content $_.FullName -Raw | ConvertFrom-Json)) {
+    $items = Load $_.Name
+    foreach ($v in @($items | Where-Object { $_ })) {
         if (-not $v.properties.enableRbacAuthorization) { Add-Finding 'MEDIUM' 'Key Vault' "Key vault '$($v.name)' uses legacy access policies (not RBAC)." }
         if ($v.properties.publicNetworkAccess -eq 'Enabled') { Add-Finding 'MEDIUM' 'Key Vault' "Key vault '$($v.name)' allows public network access." }
     }
