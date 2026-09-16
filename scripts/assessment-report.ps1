@@ -12,7 +12,7 @@
 . (Join-Path $PSScriptRoot '_common.ps1')
 $out = Get-OutDir
 
-function LJ($name)    { $p = Join-Path $out $name; if (Test-Path $p) { try { $r = Get-Content $p -Raw | ConvertFrom-Json; if ($null -eq $r) { ,@() } else { $r } } catch { $null } } }
+function LJ($name)    { $p = Join-Path $out $name; if (Test-Path $p) { try { $r = Get-Content $p -Raw | ConvertFrom-Json; if ($null -eq $r) { Write-Output -NoEnumerate @() } else { Write-Output -NoEnumerate $r } } catch { $null } } }
 function LFiles($pat) { Get-ChildItem $out -Filter $pat -ErrorAction SilentlyContinue }
 function First($x)    { if ($null -eq $x) { return $null } if ($x -is [array]) { $x[0] } else { $x } }
 function Have($x)     { $null -ne $x }
