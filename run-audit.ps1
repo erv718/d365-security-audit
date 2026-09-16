@@ -43,6 +43,7 @@ if (-not $SkipAzure) {
 
 Step 'scripts/analyze.ps1'
 Step 'scripts/assessment-report.ps1'   # maps the pulls to the MS 29-check assessment + extras
+Step 'scripts/ai-analysis.ps1'         # optional; no-op unless AI_ANALYSIS=local|api in .env
 
 Write-Host "`nDone. Raw evidence: ./output/*.json" -ForegroundColor Green
 Write-Host "Check output/ for any *-ERROR.json (endpoints that need a tweak in this branch)." -ForegroundColor Yellow

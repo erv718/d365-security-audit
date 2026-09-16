@@ -367,6 +367,9 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
 - `./output` and `.env` are git-ignored and hold real tenant data and secrets. Never commit
   them, never paste their contents anywhere they would leave the user's machine, and never send
   them to an external service. The point of this tool is that nothing leaves the tenant.
+  The one exception is explicit opt-in: `AI_ANALYSIS=api` in `.env` sends the scoped findings
+  summary to an AI endpoint the user configured (off by default; `local` mode sends nothing;
+  `redacted` scope masks emails, IPs, GUIDs and names). Respect that boundary when advising.
 - If a client secret was used, remind the user to rotate it and to delete a one-time app when
   the audit is done.
 - For development and testing, use a clean-room tenant you own rather than an employer's
@@ -389,6 +392,9 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   Vault, NSGs; Defender plans, Log Analytics and Sentinel, diagnostic settings, Logic Apps).
 - `scripts/analyze.ps1`, `scripts/assessment-report.ps1` - build the ranked findings and the
   29-check report from `./output`. Local processing only, no network calls.
+- `scripts/ai-analysis.ps1` - optional mitigation analysis, OFF by default (`AI_ANALYSIS` in
+  `.env`). `local` writes a prompt bundle to `output/` (no network); `api` sends the scoped
+  summary to a user-configured OpenAI-compatible endpoint (the tool's only opt-in egress).
 
 The coverage map in [docs/full-assessment-roadmap.md](docs/full-assessment-roadmap.md) lists,
 for every check, the evidence file it reads and the script that produces it.
