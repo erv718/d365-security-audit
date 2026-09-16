@@ -11,6 +11,27 @@ so check the current terms before relying on any of them.
 One rule for the whole recipe: turn off recurring billing on every trial the day you create
 it, and keep the Azure spending limit on. Nothing here should ever charge a card.
 
+## Automated version
+
+Two scripts in `testdata/` do steps 5 and 6 for you. Both WRITE to the tenant, which is why
+they live outside `scripts/` and carry the same warning: dev/test tenants you own only, never
+anything else. They are not part of the audit tool and `run-audit.ps1` never calls them.
+
+1. `testdata/bootstrap-audit-app.ps1`: signs you in with a device code as the dev tenant's
+   Global Administrator, creates the read-only audit app with its seven Graph application
+   permissions, grants admin consent, adds a client secret, assigns Reader on the
+   subscriptions you pick, and prints the `.env` block. The Power Platform management-app
+   registration stays manual (it is printed at the end).
+2. `testdata/seed-dev-tenant.ps1 -GuestEmail you@example.com`: plants the fixture table
+   below: test users, a guest invitation, an app with secrets expiring in 30 days and in 1 day,
+   a Conditional Access policy requiring MFA (with you excluded), a PIM eligible assignment,
+   and the Azure SQL server, NSG and Key Vault misconfigurations. Re-running reuses what
+   already exists.
+
+Run bootstrap first, then seed, then `./run-audit.ps1`. Steps 1 to 4 (tenant, trials,
+Dataverse environment, Azure account) cannot be scripted and stay manual. The table in step 6
+remains the reference for what each fixture is and why it fires.
+
 ## 1. Identity plane: a Microsoft 365 tenant
 
 **Option A, try this first.** The Microsoft 365 Developer Program E5 sandbox
