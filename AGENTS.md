@@ -33,10 +33,7 @@ Everything here is **read-only**, and it must stay that way.
 - Authorization comes first. Do not run, or advise running, a real audit against a tenant the
   user is not clearly authorized to audit.
 - The one exception is `testdata/`: it holds dev-only provisioning scripts that write by design
-  (they create the audit app and plant fixtures in a throwaway tenant the user owns). That
-  includes `replicate-from-output.ps1`, which rebuilds the structural shape of a saved output
-  folder in the dev tenant with dummy objects (it reads counts and states only, never names,
-  UPNs, GUIDs or domains), and `teardown-replica.ps1`, which deletes what it built. They are
+  (they create the audit app and plant fixtures in a throwaway tenant the user owns). They are
   not part of the audit tool, `run-audit.ps1` never calls them, and the read-only rule still
   applies to everything outside `testdata/`.
 
