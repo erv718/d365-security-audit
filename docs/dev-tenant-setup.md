@@ -28,6 +28,13 @@ anything else. They are not part of the audit tool and `run-audit.ps1` never cal
    and the Azure SQL server, NSG and Key Vault misconfigurations. Re-running reuses what
    already exists.
 
+Both scripts sign in interactively with a device code. On a tenant with security defaults ON
+(a fresh trial tenant has them on), that sign-in fails with error 530035 ("You don't have
+access to this") until the admin has registered an MFA method - and the device-code page
+cannot walk you through registering. Fix: sign into entra.microsoft.com once in a browser to
+register MFA, or turn security defaults off (needed anyway for the Conditional Access fixture
+below).
+
 Run bootstrap first, then seed, then `./run-audit.ps1`. Steps 1 to 4 (tenant, trials,
 Dataverse environment, Azure account) cannot be scripted and stay manual. The table in step 6
 remains the reference for what each fixture is and why it fires.
