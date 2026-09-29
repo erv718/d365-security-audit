@@ -32,10 +32,13 @@ Everything here is **read-only**, and it must stay that way.
   a remediation tool.
 - Authorization comes first. Do not run, or advise running, a real audit against a tenant the
   user is not clearly authorized to audit.
-- The one exception is `testdata/`: it holds dev-only provisioning scripts that write by design
-  (they create the audit app and plant fixtures in a throwaway tenant the user owns). They are
-  not part of the audit tool, `run-audit.ps1` never calls them, and the read-only rule still
-  applies to everything outside `testdata/`.
+- The one exception is `testdata/`: it holds provisioning scripts that write by design, and
+  `run-audit.ps1` never calls them. Two kinds live there: dev-only fixture seeders
+  (`seed-dev-tenant.ps1`, for throwaway tenants the user owns) and audit setup helpers that
+  grant read-only access to the user's own audit app (`bootstrap-audit-app.ps1`,
+  `add-dataverse-app-user.ps1`), which an admin may run against any tenant they administer
+  after review. They are not part of the audit tool, and the read-only rule still applies
+  to everything outside `testdata/`.
 
 ## How to run it
 

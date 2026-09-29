@@ -92,7 +92,9 @@ your email.
 
 Follow [permissions.md](permissions.md) exactly: create the app, add the seven Graph
 application permissions and grant admin consent, give it Reader on the free subscription, add
-it as an Application User with a read-only role in each Dataverse environment, and register it
+it as an Application User with a read-only role in each Dataverse environment (manually per
+permissions.md, or automated: `testdata/add-dataverse-app-user.ps1 -ClientId <your CLIENT_ID>`,
+plan first then `-Force`), and register it
 as a Power Platform management application with `New-PowerAppManagementApp`. Run that last
 step from Windows PowerShell 5.1; the module uses .NET Framework and does not load in
 PowerShell 7. Put `TENANT_ID`, `CLIENT_ID` and `CLIENT_SECRET` in `.env`, list the Trial and

@@ -84,6 +84,12 @@ About the role: a custom role with Read at Organization scope on Solution, Secur
 and Field Security Profile, plus Entity/Attribute read, is enough. `System Customizer`
 works as a quick alternative but grants more than read - prefer the custom read-only role.
 
+**Automated alternative:** `testdata/add-dataverse-app-user.ps1 -ClientId <your CLIENT_ID>`
+discovers every Dataverse environment in the tenant and does the same two changes (app
+user + role binding) over REST, with a plan table first and `-Force` to apply. It asks you
+to sign in as a tenant admin once per plane (device code). Review the script first; it
+writes exactly those records and nothing else.
+
 ## 5. Power Platform admin API (environments, DLP, tenant settings)
 
 Register the app as a Power Platform management application. One time, signed in as a
