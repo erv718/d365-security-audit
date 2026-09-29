@@ -16,11 +16,32 @@
 # Power Platform admin module signs in through. There is no app of ours to sign in with, so
 # a person signs in through a client that already exists in every tenant.
 #
+# Endpoint choice, verified on learn.microsoft.com (September 2026):
+#   USED     Dataverse Web API, per environment, with a delegated token for that environment:
+#            POST {envUrl}/api/data/v9.2/systemusers
+#                 { "applicationid": "<CLIENT_ID>", "businessunitid@odata.bind": "/businessunits(<root BU>)",
+#                   "azureactivedirectoryobjectid": "<service principal object id>" }
+#            POST {envUrl}/api/data/v9.2/systemusers(<id>)/systemuserroles_association/$ref
+#                 { "@odata.id": "{envUrl}/api/data/v9.2/roles(<roleid>)" }
+#            The systemuser table reference lists applicationid and azureactivedirectoryobjectid as
+#            valid for create and businessunitid as SystemRequired; the role binding is the
+#            systemuserroles_association collection from the Web API basic-operations sample.
+#            This path binds exactly the role you name.
+#   REJECTED Power Platform admin API (preview), "Create a Dataverse application user":
+#            POST https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments/{environmentId}/addAppUser?api-version=2020-10-01
+#                 { "servicePrincipalAppId": "<CLIENT_ID>" }
+#            Documented, and what PAC CLI wraps, but it "always adds the application user as a
+#            System Administrator" and offers no role choice: wrong for a read-only audit app.
+#            The environment list still comes from that admin API:
+#            GET https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments?api-version=2020-10-01
+#
 # Requires: Windows PowerShell 5.1 or PowerShell 7. No modules, no az CLI.
 
 param(
     [Parameter(Mandatory)][string]$ClientId,        # application (client) id of the audit app
-    [string]$RoleName = 'System Customizer',        # role bound to the app user in each env
+    [string]$ClientObjectId,                        # its service principal (enterprise app) object id; resolved from Graph if omitted
+    [string]$RoleName = 'System Customizer',        # role bound to the app user in each env; least privilege: the custom
+                                                    # read-only role from docs/permissions.md section 4, e.g. -RoleName 'SecAudit Reader'
     [string]$Tenant = 'organizations',              # tenant id or domain; organizations = pick at sign-in
     [switch]$Force,                                 # without it: plan only, nothing is written
     [switch]$Yes                                    # skip the typed confirmation with -Force
@@ -104,6 +125,14 @@ function Test-RoleBound([string]$EnvUrl, [string]$Token, [string]$SysId, [string
     return $false
 }
 
+# The root business unit (no parent): businessunitid is SystemRequired when creating a systemuser.
+function Get-RootBusinessUnitId([string]$EnvUrl, [string]$Token) {
+    $H = @{ Authorization = "Bearer $Token" }
+    $r = Invoke-RestMethod -Uri "$($EnvUrl.TrimEnd('/'))/$DvApi/businessunits?`$filter=_parentbusinessunitid_value eq null&`$select=businessunitid&`$top=1" -Headers $H
+    if ($r.value -and @($r.value).Count -gt 0) { return "$($r.value[0].businessunitid)" }
+    return $null
+}
+
 Write-Host ''
 Write-Host 'Add the audit app as a Dataverse Application User (audit setup helper)' -ForegroundColor Cyan
 Write-Host 'Writes one thing only: an application-user record + a security-role binding for the app id you passed.' -ForegroundColor DarkGray
@@ -158,30 +187,33 @@ if (-not $Yes) {
 }
 
 # --- apply -------------------------------------------------------------------------------
+# azureactivedirectoryobjectid (the enterprise app's object id) is optional on create; Dataverse
+# resolves the app from applicationid alone. Resolve it once from Graph when it was not passed in.
+$needCreate = (@($todo | Where-Object { -not $_.SysId }).Count -gt 0)
+if ($needCreate -and -not $ClientObjectId) {
+    try {
+        $gtok = Get-DeviceCodeToken -Scope 'https://graph.microsoft.com/.default' -Label 'Graph (resolve the service principal object id)'
+        $sp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$ClientId'&`$select=id" -Headers @{ Authorization = "Bearer $gtok" }
+        if ($sp.value -and @($sp.value).Count -gt 0) { $ClientObjectId = "$($sp.value[0].id)" }
+        else { Write-Warning "No service principal found for appId $ClientId (testdata/bootstrap-audit-app.ps1 creates it). Continuing with applicationid only." }
+    } catch { Write-Warning "Could not resolve the service principal from Graph ($(Get-ErrorText $_)). Continuing with applicationid only." }
+}
+
 foreach ($row in $todo) {
     $url = $row.Url
     try {
         $dtok = Get-DvToken $url
         $HD = @{ Authorization = "Bearer $dtok"; 'Content-Type' = 'application/json' }
 
-        # 1. the application user itself. BAP addApplicationUser first (the same action PAC
-        #    CLI's create-service-principal wraps); on failure, direct Dataverse systemuser
-        #    create with the service principal object id resolved from Graph.
+        # 1. the application user: POST systemusers with applicationid, bound to the root
+        #    business unit (SystemRequired), plus the service principal object id when known.
         $sysId = $row.SysId
         if (-not $sysId) {
-            $made = $false
-            try {
-                Invoke-RestMethod -Method Post -Uri "$Bap$BapEnvs/$($row.EnvName)/addApplicationUser?api-version=2020-10-01" -Headers @{ Authorization = "Bearer $bapTok"; 'Content-Type' = 'application/json' } -Body (@{ applicationId = $ClientId } | ConvertTo-Json) | Out-Null
-                $made = $true
-            } catch {
-                Write-Host "  [$($row.Env)] BAP addApplicationUser failed ($(Get-ErrorText $_)); trying direct Dataverse create..." -ForegroundColor DarkYellow
-                $gtok = Get-DeviceCodeToken -Scope 'https://graph.microsoft.com/.default' -Label 'Graph (resolve service principal)'
-                $sp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$ClientId'&`$select=id" -Headers @{ Authorization = "Bearer $gtok" }
-                if (-not $sp.value -or @($sp.value).Count -eq 0) { throw "no service principal found for appId $ClientId" }
-                $body = @{ applicationid = $ClientId; azureactivedirectoryobjectid = "$($sp.value[0].id)" } | ConvertTo-Json
-                Invoke-RestMethod -Method Post -Uri "$url/$DvApi/systemusers" -Headers $HD -Body $body | Out-Null
-                $made = $true
-            }
+            $buId = Get-RootBusinessUnitId $url $dtok
+            if (-not $buId) { throw 'root business unit not found (needs read access to businessunits)' }
+            $user = @{ applicationid = $ClientId; 'businessunitid@odata.bind' = "/businessunits($buId)" }
+            if ($ClientObjectId) { $user['azureactivedirectoryobjectid'] = $ClientObjectId }
+            Invoke-RestMethod -Method Post -Uri "$url/$DvApi/systemusers" -Headers $HD -Body ($user | ConvertTo-Json) | Out-Null
             # replication lag: the user can take a few seconds to appear
             for ($i = 0; $i -lt 5 -and -not $sysId; $i++) { Start-Sleep -Seconds 3; $sysId = Get-AppUserId $url $dtok }
             if (-not $sysId) { throw 'application user still not visible after create (replication)' }
