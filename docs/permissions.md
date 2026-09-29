@@ -86,13 +86,27 @@ works as a quick alternative but grants more than read - prefer the custom read-
 
 ## 5. Power Platform admin API (environments, DLP, tenant settings)
 
-Register the app as a Power Platform management application. One time, from any machine
-with PowerShell, signed in as a Power Platform admin:
+Register the app as a Power Platform management application. One time, signed in as a
+Power Platform admin:
 
 ```powershell
 Install-Module Microsoft.PowerApps.Administration.PowerShell -Scope CurrentUser
 Add-PowerAppsAccount
 New-PowerAppManagementApp -ApplicationId <your CLIENT_ID>
+```
+
+**Run this from Windows PowerShell 5.1** (the `powershell.exe` that ships with Windows). The
+module is built on .NET Framework: it does not load in PowerShell 7 and does not work on
+macOS or Linux. It is tenant-level configuration, so one run from any Windows machine covers
+audits run later from anywhere, including macOS and Linux. The audit itself has no such
+limitation; it is pure REST and runs on PowerShell 5.1 and 7 on any OS.
+
+If `Install-Module` warns that it cannot resolve the package source, the gallery registration
+is broken on that machine. Re-register it, then retry:
+
+```powershell
+Register-PSRepository -Default
+Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
 ```
 
 Note on the token audience, for troubleshooting only: the tool requests its Power Platform
