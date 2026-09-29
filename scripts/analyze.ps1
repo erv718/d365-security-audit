@@ -16,20 +16,25 @@ function Load($name) {
         if ($null -eq $r) { Write-Output -NoEnumerate @() } else { Write-Output -NoEnumerate $r }
     } catch { Write-Warning "analyze: $name could not be parsed; skipped ($($_.Exception.Message))"; $null }
 }
-$today = Get-Date
+$now = [datetimeoffset]::Now
 $findings = @()
 function Add-Finding($sev, $area, $text) { $script:findings += [pscustomobject]@{ Severity=$sev; Area=$area; Finding=$text } }
 
 # --- Expired app credentials ---
+# One unparseable record must never stop the run: the date helper returns $null and the
+# per-app try/catch skips, matching the fail-soft rule in CONTRIBUTING.
 $apps = Load 'applications.json'
 if ($apps) {
     $expired = 0; $soon = 0
     foreach ($a in $apps) {
-        foreach ($c in @($a.passwordCredentials) + @($a.keyCredentials)) {
-            if (-not $c.endDateTime) { continue }
-            $end = [datetime]$c.endDateTime
-            if ($end -lt $today) { $expired++ } elseif ($end -lt $today.AddDays(60)) { $soon++ }
-        }
+        try {
+            foreach ($c in @($a.passwordCredentials) + @($a.keyCredentials)) {
+                if (-not $c.endDateTime) { continue }
+                $end = ConvertTo-DateSafe $c.endDateTime
+                if ($null -eq $end) { continue }
+                if ($end -lt $now) { $expired++ } elseif ($end -lt $now.AddDays(60)) { $soon++ }
+            }
+        } catch { Write-Warning "analyze: credential expiry check skipped for one app ($($_.Exception.Message))" }
     }
     if ($expired) { Add-Finding 'MEDIUM' 'App secrets' "$expired expired app credentials still present (orphaned / never cleaned up)." }
     if ($soon)    { Add-Finding 'LOW' 'App secrets' "$soon app credentials expire within 60 days - renew before outage." }

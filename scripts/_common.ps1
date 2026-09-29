@@ -102,6 +102,15 @@ function Get-OutDir {
     return $dir
 }
 
+# Convert an API date value to a DateTimeOffset, or $null when it cannot be parsed.
+# The same JSON date arrives as a string on Windows PowerShell 5.1 and as a DateTime on
+# PowerShell 7 (its ConvertFrom-Json auto-converts ISO dates); DateTimeOffset accepts both
+# on either edition and never throws on a value it does not recognise.
+function ConvertTo-DateSafe($v) {
+    if ($null -eq $v -or "$v" -eq '') { return $null }
+    try { return [datetimeoffset]$v } catch { return $null }
+}
+
 function Save-Json {
     param($Data, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $Data) { $Data = @() }   # never crash on an empty/absent result

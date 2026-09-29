@@ -147,8 +147,17 @@ foreach ($f in $fpFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $fpR
 
 $expiredSecrets = 0
 if (Have $apps) {
-    $now = Get-Date
-    foreach ($a in @($apps)) { foreach ($c in @($a.passwordCredentials) + @($a.keyCredentials)) { if ($c.endDateTime -and [datetime]$c.endDateTime -lt $now) { $expiredSecrets++ } } }
+    $now = [datetimeoffset]::Now
+    foreach ($a in @($apps)) {
+        try {
+            foreach ($c in @($a.passwordCredentials) + @($a.keyCredentials)) {
+                if (-not $c.endDateTime) { continue }
+                $end = ConvertTo-DateSafe $c.endDateTime
+                if ($null -eq $end) { continue }
+                if ($end -lt $now) { $expiredSecrets++ }
+            }
+        } catch { Write-Warning "assessment: credential expiry check skipped for one app ($($_.Exception.Message))" }
+    }
 }
 
 # Defender for Cloud plans. Only plan names documented in the Pricings API are judged; other
