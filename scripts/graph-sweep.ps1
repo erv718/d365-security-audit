@@ -60,6 +60,15 @@ try {
     Write-Host "  tenant-wide guests: $gc" -ForegroundColor Yellow
 } catch { Write-Warning "Guest count failed: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } 'guest-count-ERROR.json' | Out-Null }
 
+Write-Host 'Graph: user sign-in activity (dormant accounts)...' -ForegroundColor Cyan
+# Last interactive, non-interactive and successful sign-in per account. Needs User.Read.All +
+# AuditLog.Read.All and an Entra ID P1 licence; the file can be large on a big tenant.
+try {
+    $ua = Invoke-Paged "$G/users?`$select=id,userPrincipalName,displayName,accountEnabled,userType,createdDateTime,signInActivity&`$top=999" $H
+    Save-Json $ua 'users-signin-activity.json' | Out-Null
+    Write-Host "  $(@($ua).Count) account(s) with sign-in activity" -ForegroundColor Yellow
+} catch { $why = Get-ErrorText $_; Write-Warning "User sign-in activity needs AuditLog.Read.All + Entra ID P1: $why"; Save-Json @{ error = $why } 'users-signin-activity-ERROR.json' | Out-Null }
+
 Write-Host 'Graph: sign-in sample...' -ForegroundColor Cyan
 try { Save-Json (Invoke-RestMethod -Uri "$G/auditLogs/signIns?`$top=200" -Headers $H).value 'signins-sample.json' | Out-Null }
 catch { Write-Warning "Sign-in logs need AuditLog.Read.All + Entra P1: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } 'signins-sample-ERROR.json' | Out-Null }

@@ -138,7 +138,7 @@ Write-Host 'Add the audit app as a Dataverse Application User (audit setup helpe
 Write-Host 'Writes one thing only: an application-user record + a security-role binding for the app id you passed.' -ForegroundColor DarkGray
 
 # --- discover environments with a Dataverse database ------------------------------------
-$bapTok = Get-DeviceCodeToken -Scope "$Bap/user_impersonation" -Label 'Power Platform admin'
+$bapTok = Get-DeviceCodeToken -Scope "$Bap/.default" -Label 'Power Platform admin'
 $HB = @{ Authorization = "Bearer $bapTok" }
 $envs = @()
 try {

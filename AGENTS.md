@@ -51,15 +51,46 @@ Output lands in `./output` (git-ignored): `*.json` raw evidence, `FINDINGS-summa
 (also printed to the console), `assessment-report.md` and `assessment-report.json`. Run a
 single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
 `scripts/analyze.ps1` and `scripts/assessment-report.ps1` only read `./output`; they can be
-re-run on their own after a sweep without touching the tenant.
+re-run on their own after a sweep without touching the tenant. A run can be narrowed to
+chosen subscriptions, resource groups, resource readers and environments; see "Scoped runs".
+
+## Scoped runs
+
+A scope selects what a run covers. It comes from three layers, highest first: the
+`run-audit.ps1` parameters `-Scope <file>`, `-Subscriptions`, `-ResourceGroups`,
+`-Environments`, `-Types`; then `scope.json` next to `.env` (format: `scope.example.json`);
+then the `.env` lists `AZURE_SUBSCRIPTIONS` and `DATAVERSE_ENVIRONMENTS`. A field set in a
+higher layer replaces that field from the layers below. Blank everywhere means everything the
+app can read, which is the pre-scope behaviour. `scripts/new-scope.ps1 -FromInventory a.csv`
+writes a scope from portal inventory exports with no sign-in; without `-FromInventory` it
+lists what the app can see and offers numbered pickers.
+
+- `scripts/check-setup.ps1` resolves the scope, checks every selection against what the app
+  can actually see, prints the effective scope and writes it to `output/scope-effective.json`.
+  A selected subscription, group or environment the app cannot see is warned about and reads
+  Not checked in the report; it is never dropped silently. `-StrictScope` stops the run instead.
+- Identity evidence (Graph) is tenant-wide by nature and is never filtered. Power Platform
+  governance rows (1.3, 2.4, 5.3, Managed Environments) are computed over the whole tenant.
+  Dataverse rows cover the selected environments; Azure rows the selected subscriptions and
+  groups. Role assignments, Defender plans and diagnostic settings are read per subscription
+  even when resource groups are selected, because that is where their verdicts are taken.
+- **A PARTIAL report is never presented as complete.** A scoped run says `Scope: PARTIAL` with
+  "n of m" counts under the report title, every row carries `[tenant-wide]` or
+  `[scoped: ...]`, and `assessment-report.json` and `FINDINGS-summary.json` rows carry a
+  `Scope` field. When you summarize or advise from such a report, say which slice it covers
+  and that the rest of the estate was not audited in that run.
+- The one interactive sign-in in this repository is `scripts/new-scope.ps1 -DeviceCode`, an
+  optional helper that lists what exists in order to write `scope.json`. It never runs as part
+  of an audit; `run-audit.ps1` and every sweep still sign in only as the app registration.
 
 ## Authentication (app registration ONLY, by design)
 
 **The read-only app registration is the only way this tool authenticates.** This is a
 deliberate security decision by the project. The tool never performs an interactive sign-in,
 never shows a device code, and never uses a person's account or CLI session. **Do not add an
-interactive sign-in path or any auth fallback.** The reasons, so the rule survives a
-well-meaning refactor:
+interactive sign-in path or any auth fallback.** The only exception is the optional
+`scripts/new-scope.ps1 -DeviceCode` helper, which is not part of an audit run (see "Scoped
+runs"). The reasons, so the rule survives a well-meaning refactor:
 
 - An admin can run it without ever putting their own token in play. A delegated token carries
   everything that person can do; the app token carries seven read-only permissions that were
@@ -181,6 +212,8 @@ loading them.
 | `servicePrincipals.json` | can exceed 1.5 MB | never load; query for one principal or a count |
 | `appRoleDefinitions-graph.json` | 300 KB or more | never load; it is a Microsoft catalogue, not tenant data |
 | `signins-sample.json` | several hundred KB | query; group or filter, never dump |
+| `users-signin-activity.json` | can exceed 10 MB on a large tenant | never load; query for counts or one account |
+| `dv-*-users.json` | 100 KB to several MB per environment | query; filter on role name |
 | `pp-environments.json` | 250 to 300 KB | query per environment or per property |
 | `applications.json` | 200 KB or more | query for expiring credentials or one app |
 | `arm-*-rbac.json`, `arm-*-nsgs.json` | 100 to 200 KB each | query |
@@ -350,19 +383,25 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   carries the OData message naming the column; fix the column list in the script. All current
   columns are verified against the Dataverse table references.
 - **Dataverse 403 on some environments**: the app is not an Application User with a role there.
-  Expected for environments the user does not own or care about. `dataverse-plus` audits every
-  environment it auto-discovers from `output/pp-environment-urls.json`, so narrowing
-  `DATAVERSE_ENVIRONMENTS` only limits the basic `dataverse-sweep`; to silence the extra
-  `dvplus-*-ERROR.json` files, run with `-SkipPowerPlatform` and delete that URL file.
+  Expected for environments the user does not own or care about. Both Dataverse sweeps cover
+  every discovered environment unless a scope narrows them: list the environments that matter
+  in `scope.json`, `-Environments` or `DATAVERSE_ENVIRONMENTS` and the others are skipped (the
+  report then says PARTIAL and shows "n of m environments").
 - **Dataverse 404 on some environments**: the table does not exist in that environment type
   (Dataverse for Teams and Power Pages developer environments have a reduced schema).
   Expected; ignore.
 - **`pp-dlp-policies.json` is `[]`**: a real result, not an error. The tenant has no connector
   data policy, and 5.3 reads Gap. A `pp-dlp-policies-ERROR.json` instead means the app is not
   registered as a Power Platform management application.
-- **Roles, solutions and per-table audit flags all Not checked**: `DATAVERSE_ENVIRONMENTS` is
-  blank, so the basic `dataverse-sweep` did not run. The auto-discovered URL list only feeds
-  `dataverse-plus`. Set the variable to the environments that matter.
+- **Roles, solutions and per-table audit flags all Not checked**: the basic `dataverse-sweep`
+  read nothing: no environment was selected or discovered (Power Platform sweep skipped, or the
+  app not registered as a management app), or the app is not an Application User anywhere.
+  Select environments in `scope.json`, `-Environments` or `DATAVERSE_ENVIRONMENTS`, and add the
+  app user where needed (`testdata/add-dataverse-app-user.ps1`).
+- **Dormant accounts missing from the findings**: `users-signin-activity-ERROR.json` exists. The
+  per-user sign-in activity needs AuditLog.Read.All and an Entra ID P1 licence in the tenant.
+- **System Administrator holders missing**: `dv-*-users-ERROR.json` exists. The app user's role
+  needs Read on User and Security Role in that environment (see docs/permissions.md).
 - **Every Power Platform check Not checked**: the BAP token failed. Register the app with
   `New-PowerAppManagementApp` (see docs/permissions.md).
 

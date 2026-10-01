@@ -3,11 +3,13 @@
 # auditing + plugin trace), email server profiles, queue + mailbox surface (server-side
 # sync), and field-level security usage (fieldpermissions).
 #
-# Environment URLs come from DATAVERSE_ENVIRONMENTS in .env (comma-separated) AND, if
-# present, from output/pp-environment-urls.json (auto-discovered by the Power Platform
-# sweep). The app must be an Application User with a read-only role in each environment.
-# Read-only. GET/paged reads only. Every environment and every query is isolated in its
-# own try/catch so one failure (missing license / no access) never stops the sweep.
+# Environments: the same resolved list as dataverse-sweep.ps1 (run-audit.ps1 -Environments >
+# scope.json > DATAVERSE_ENVIRONMENTS in .env, as URLs, environment ids or display names).
+# With no selection, every environment the Power Platform sweep discovered with a Dataverse
+# URL (output/pp-environment-urls.json). The app must be an Application User with a read-only
+# role in each environment. Read-only. GET/paged reads only. Every environment and every query
+# is isolated in its own try/catch so one failure (missing license / no access) never stops
+# the sweep.
 #
 # $select column names are verified against the Dataverse table references
 # (organization, emailserverprofile). One invalid column 400s the whole query and the
@@ -15,28 +17,24 @@
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 
-# --- Gather environment URLs: .env list + auto-discovered file ----------------
-$envs = @()
-$envs += (Get-Conf DATAVERSE_ENVIRONMENTS) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-
-$discovered = Join-Path (Get-OutDir) 'pp-environment-urls.json'
-if (Test-Path $discovered) {
-    try {
-        $fromFile = Get-Content $discovered -Raw | ConvertFrom-Json
-        $envs += @($fromFile) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }
-        Write-Host "Dataverse+: picked up auto-discovered URLs from $discovered" -ForegroundColor Cyan
-    } catch {
-        Write-Warning "Could not read $discovered : $($_.Exception.Message)"
-    }
+# --- The environment list in scope (shared resolution with dataverse-sweep.ps1) ----
+$scope = Read-ScopeEffective
+$res = Resolve-ScopeEnvironments $scope
+$envs = @(@($res.environments) | ForEach-Object { $_.url })
+if (@($res.unresolved).Count -gt 0) {
+    Write-Warning "Dataverse+: $(@($res.unresolved).Count) selected environment(s) could not be resolved to a URL: $(@($res.unresolved) -join ', '). Use the instance URL, or run the Power Platform sweep first so ids and display names resolve."
 }
-
-# Normalise (drop trailing slash) and de-duplicate (case-insensitive).
-$envs = @($envs | ForEach-Object { $_.TrimEnd('/') } | Select-Object -Unique)
-if (-not $envs) {
-    Write-Warning 'No Dataverse environment URLs (DATAVERSE_ENVIRONMENTS / pp-environment-urls.json) - skipping dataverse-plus.'
+if ($envs.Count -eq 0) {
+    Write-Warning 'No Dataverse environments selected or discovered (DATAVERSE_ENVIRONMENTS, scope.json, -Environments, or the Power Platform sweep) - skipping dataverse-plus.'
     return
 }
-Write-Host "Dataverse+: $(@($envs).Count) environment(s) to check." -ForegroundColor Cyan
+Write-Host "Dataverse+: $($envs.Count) environment(s) to check$(if($res.selected -gt 0){' (selected by scope)'}else{' (discovered)'})." -ForegroundColor Cyan
+Update-ScopeEffective {
+    param($x)
+    Set-ScopeField $x.powerPlatform 'discoveredEnvironments' $res.discovered
+    Set-ScopeField $x.powerPlatform 'resolved' @($res.environments)
+    Set-ScopeField $x.powerPlatform 'unresolved' @($res.unresolved)
+} | Out-Null
 
 # Short, filesystem-safe name from the host (first DNS label).
 function Get-SafeName($url) {

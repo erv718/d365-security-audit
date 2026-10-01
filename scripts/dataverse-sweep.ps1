@@ -1,14 +1,28 @@
 # dataverse-sweep.ps1 - read-only pull of Dataverse security config, per environment.
 # Covers: org-level auditing, per-table audit flags, security roles (managed vs custom), solutions.
 #
-# Set DATAVERSE_ENVIRONMENTS in .env to a comma-separated list of environment URLs, e.g.
-#   DATAVERSE_ENVIRONMENTS=https://yourorg.crm.dynamics.com,https://yourorg-test.crm.dynamics.com
-# The app must be added as an Application User with a read-only role in each.
+# Environments: the same resolved list as dataverse-plus.ps1 (run-audit.ps1 -Environments >
+# scope.json > DATAVERSE_ENVIRONMENTS in .env, as URLs, environment ids or display names).
+# With no selection, every environment the Power Platform sweep discovered with a Dataverse
+# URL (output/pp-environment-urls.json). The app must be an Application User with a read-only
+# role in each; environments where it is not simply leave a dv-<env>-*-ERROR.json marker.
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 
-$envs = (Get-Conf DATAVERSE_ENVIRONMENTS) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-if (-not $envs) { Write-Warning 'No DATAVERSE_ENVIRONMENTS set in .env - skipping Dataverse sweep.'; return }
+$scope = Read-ScopeEffective
+$res = Resolve-ScopeEnvironments $scope
+$envs = @(@($res.environments) | ForEach-Object { $_.url })
+if (@($res.unresolved).Count -gt 0) {
+    Write-Warning "Dataverse: $(@($res.unresolved).Count) selected environment(s) could not be resolved to a URL: $(@($res.unresolved) -join ', '). Use the instance URL, or run the Power Platform sweep first so ids and display names resolve."
+}
+if ($envs.Count -eq 0) { Write-Warning 'No Dataverse environments selected or discovered (DATAVERSE_ENVIRONMENTS, scope.json, -Environments, or the Power Platform sweep) - skipping Dataverse sweep.'; return }
+Write-Host "Dataverse: $($envs.Count) environment(s)$(if($res.selected -gt 0){' selected by scope'}else{' discovered'})" -ForegroundColor Cyan
+Update-ScopeEffective {
+    param($x)
+    Set-ScopeField $x.powerPlatform 'discoveredEnvironments' $res.discovered
+    Set-ScopeField $x.powerPlatform 'resolved' @($res.environments)
+    Set-ScopeField $x.powerPlatform 'unresolved' @($res.unresolved)
+} | Out-Null
 
 function Get-DvAll($base, $H, $path) {
     $items = @(); $next = "$base/api/data/v9.2/$path"
@@ -20,7 +34,7 @@ function Get-DvAll($base, $H, $path) {
 # disappears from output/ (it leaves a dv-<env>-<area>-ERROR.json marker like the other sweeps).
 function Save-DvArea($base, $H, $safe, $path, $file, $label) {
     try { Save-Json (Get-DvAll $base $H $path) "dv-$safe-$file.json" | Out-Null }
-    catch { Write-Warning "  [$safe] $label failed: $($_.Exception.Message)"; Save-Json @{ error = $_.Exception.Message } "dv-$safe-$file-ERROR.json" | Out-Null }
+    catch { $why = Get-ErrorText $_; Write-Warning "  [$safe] $label failed: $why"; Save-Json @{ error = $why } "dv-$safe-$file-ERROR.json" | Out-Null }
 }
 
 foreach ($url in $envs) {
@@ -34,5 +48,6 @@ foreach ($url in $envs) {
     Save-DvArea $url $H $safe 'roles?$select=name,ismanaged,iscustomizable,roleid' 'roles' 'security roles'
     Save-DvArea $url $H $safe 'solutions?$select=uniquename,friendlyname,version,ismanaged,isvisible&$expand=publisherid($select=friendlyname)' 'solutions' 'solutions'
     Save-DvArea $url $H $safe 'fieldsecurityprofiles?$select=name' 'fieldsec' 'field security profiles'
+    Save-DvArea $url $H $safe 'systemusers?$select=fullname,domainname,isdisabled,accessmode,applicationid,azureactivedirectoryobjectid&$filter=isdisabled eq false&$expand=systemuserroles_association($select=name,roleid)' 'users' 'users and their roles'
     Write-Host "  [$safe] done" -ForegroundColor Green
 }

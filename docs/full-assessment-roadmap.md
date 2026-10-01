@@ -28,25 +28,25 @@ template, so it mirrors 2.4's verdict and is left out of the tally.
 | # | Check | Evidence file(s) in `output/` | Produced by | Verdict rule |
 |---|---|---|---|---|
 | 1.1 | Entra integrated with D365 | `pp-environments.json`, `signins-sample.json` | powerplatform-sweep, graph-sweep | Platform fact. Aligned when the environment inventory was read; Not checked otherwise |
-| 1.2 | Roles least privilege | `dv-*-roles.json` | dataverse-sweep | 0 custom roles = Gap; any = Partial |
+| 1.2 | Roles least privilege | `dv-*-roles.json`, `dv-*-users.json` | dataverse-sweep | More than 3 people holding System Administrator in any environment = Gap; else 0 custom roles = Gap, any = Partial |
 | 1.3 | Security group restricts environment access | `pp-environments.json` (`linkedEnvironmentMetadata.securityGroupId`) | powerplatform-sweep | Counted over eligible environments (has Dataverse; not Default, Developer or Teams). All bound = Aligned; some = Partial; none = Gap |
 | 1.4 | Conditional Access | `ca-policies.json`, `security-defaults.json` | graph-sweep, graph-identity-plus | An enabled policy enforcing MFA = Aligned; none = Gap; security defaults on with no MFA policy = Partial |
-| 1.5 | Intune device management | `intune-compliance-policies.json`, `intune-device-overview.json` | graph-identity-plus | Policies present = Partial; 0 = Gap |
+| 1.5 | Intune device management | `intune-compliance-policies.json`, `intune-device-overview.json` | graph-identity-plus | Policies present = Partial; 0 = Gap; Intune not provisioned in the tenant (error 'Request not applicable to target tenant') = Gap |
 | 1.6 | Device compliance enforced for D365 | `intune-compliance-policies.json`, `ca-policies.json` (`compliantDevice` control) | graph-identity-plus, graph-sweep | As 1.5; the evidence adds how many enabled CA policies require a compliant device |
 | 2.1 | Service-to-service app access | `applications.json`, `servicePrincipals.json`, `FINDINGS-summary.json` | graph-sweep, analyze | High-privilege app findings present = Partial; none = Aligned |
 | 2.2 | App/user access inventory | `applications.json`, `servicePrincipals.json`, `appRoleAssignments-*.json`, `directoryRoles.json`, `guest-count.json` | graph-sweep | Inventory produced = Partial (whether anyone reviews it is a process, not readable) |
-| 2.3 | PIM / segregation of duties | `pim-eligible.json`, `pim-active.json` | graph-identity-plus | Eligible assignments > 0 = Aligned; 0 = Gap (all admin access is standing) |
+| 2.3 | PIM / segregation of duties | `pim-eligible.json`, `pim-active.json` | graph-identity-plus | Eligible assignments > 0 = Aligned; 0 = Gap (all admin access is standing); no Entra ID P2 (error AadPremiumLicenseRequired) = Gap |
 | 2.4 | Security groups restrict environment access | as 1.3 | powerplatform-sweep | Same evidence and verdict as 1.3 |
 | 2.5 | Security groups (Microsoft template duplicate of 2.4) | as 1.3 | powerplatform-sweep | Mirrors 2.4; excluded from the tally |
-| 3.1 | Encryption at rest / in transit | `arm-*-sql.json` (`minimalTlsVersion`) | azure-sweep | Platform fact. Any SQL server accepting TLS below 1.2 = Partial; else Aligned |
+| 3.1 | Encryption at rest / in transit | `pp-environments.json`, `arm-*-sql.json` (`minimalTlsVersion`) | powerplatform-sweep, azure-sweep | Platform fact. Nothing read = Not checked; any SQL server accepting TLS below 1.2 = Partial; else Aligned. Customer-managed keys always listed as not verified |
 | 3.2 | Customer Lockbox + consent | none | | MANUAL: PPAC > Manage > Tenant settings > Customer Lockbox |
 | 3.3 | PII / sensitivity labels | none | | MANUAL: Purview portal > Information Protection |
-| 3.4 | Data retention | `dv-*-org.json`, `dvplus-*-org-settings.json` (`auditretentionperiodv2`) | dataverse-sweep, dataverse-plus | Retention set in any environment = Partial; none = Gap |
+| 3.4 | Data retention | `dv-*-org.json`, `dvplus-*-org-settings.json` (`auditretentionperiodv2`) | dataverse-sweep, dataverse-plus | Audit-log retention set in any environment = Partial; none = Gap. Business-data retention (Dataverse long-term retention, Purview) is stated as not verified |
 | 3.5 | Record sync / Outlook | `dvplus-*-emailprofiles.json` | dataverse-plus | Profiles found = Partial; 0 = Not in use |
 | 3.6 | Mailbox / queue integration | `dvplus-*-emailprofiles.json`, `dvplus-*-mailboxes.json`, `dvplus-*-queues.json` | dataverse-plus | Only the default profile per environment = Not in use; more = Partial |
-| 4.1 | D365 auditing enabled | `dv-*-org.json`, `dvplus-*-org-settings.json` (`isauditenabled`) | dataverse-sweep, dataverse-plus | On everywhere = Aligned; some = Partial; nowhere = Gap |
+| 4.1 | D365 auditing enabled | `dv-*-org.json`, `dvplus-*-org-settings.json` (`isauditenabled`), `dv-*-entities.json` (`IsAuditEnabled`) | dataverse-sweep, dataverse-plus | On everywhere = Aligned; some = Partial; nowhere = Gap. Org auditing on but a key table (account, contact, systemuser, role, team, businessunit, fieldsecurityprofile) off = Partial |
 | 4.2 | Events / user activity logged | same files (`isuseraccessauditenabled`, `isreadauditenabled`) | dataverse-sweep, dataverse-plus | Follows 4.1; Partial when auditing is on anywhere |
-| 4.3 | SIEM / monitoring over Power Platform | `arm-*-sentinel.json` | azure-plus | Sentinel on any workspace = Partial; none = Gap |
+| 4.3 | SIEM / monitoring over Power Platform | `arm-*-sentinel.json`, `arm-*-diagnostic-settings.json`, `arm-*-loganalytics.json` | azure-plus | Sentinel on any workspace = Partial; none = Gap. Evidence adds activity-log export destinations (Event Hub, Log Analytics, storage) and workspace retention |
 | 4.4 | Purview / Sentinel integration | `arm-*-sentinel.json` | azure-plus | Sentinel on = Partial; otherwise Not checked (Purview audit is manual) |
 | 5.1 | Security role design | `dv-*-roles.json` | dataverse-sweep | As 1.2 |
 | 5.2 | Field-level / record / BU security | `dvplus-*-fieldpermissions.json`, `dv-*-fieldsec.json` | dataverse-plus, dataverse-sweep | Any field permission or profile = Partial; 0 = Gap |
@@ -74,11 +74,18 @@ to be set.
 | Ranked technical findings | `FINDINGS-summary.json` | analyze |
 
 The technical findings cover: expired and expiring app credentials; apps holding high-privilege
-tenant-wide Graph permissions; Conditional Access and MFA enforcement; legacy/basic-auth
-sign-ins in the sample; the guest count; the Global Administrator count; Dataverse auditing off
-per environment; zero custom security roles; SQL servers with public access or an allow-all-Azure
-firewall rule; NSG rules opening RDP or SSH to the internet; Key Vaults on access policies or
-with public access.
+tenant-wide Graph or Exchange Online permissions; Conditional Access and MFA enforcement;
+legacy/basic-auth sign-ins in the sample; the guest count; the Global Administrator count;
+dormant accounts (90+ days) and dormant accounts holding a directory role or Dataverse System
+Administrator (`users-signin-activity.json`); Dataverse auditing off per environment and per key
+table; zero custom security roles; who holds System Administrator, including the organisation's
+own application users (`dv-*-users.json`); unmanaged solutions in Production environments; SQL
+servers and Synapse workspaces with public access or an allow-all-Azure rule; firewall rules
+graded by breadth; Owner sprawl and service principals holding Owner (`arm-*-rbac.json`); NSG
+rules opening RDP or SSH to the internet; Key Vaults on access policies or with public access.
+
+When a pull fails, every **Not checked** row it feeds quotes the service's own error from the
+matching `*-ERROR.json` (HTTP status, error code, message).
 
 ## What cannot be automated, and why
 

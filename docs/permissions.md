@@ -30,9 +30,9 @@ an Azure **Reader** role, and a Dataverse **security role** as an application us
 |---|---|
 | `Application.Read.All` | App registrations, service principals, credential expiry, app permissions |
 | `RoleManagement.Read.Directory` | Directory roles + members, PIM eligible/active assignments |
-| `User.Read.All` | Guest counts and the names behind role members |
+| `User.Read.All` | Guest counts, the names behind role members, per-user sign-in activity (dormant accounts) |
 | `Policy.Read.All` | Conditional Access, named locations, auth methods policy, security defaults |
-| `AuditLog.Read.All` | Sign-in sample + MFA registration report (needs Entra ID P1) |
+| `AuditLog.Read.All` | Sign-in sample, per-user last sign-in for dormant-account detection, MFA registration report (needs Entra ID P1) |
 | `DeviceManagementConfiguration.Read.All` | Intune device compliance policies |
 | `DeviceManagementManagedDevices.Read.All` | Intune managed-device overview |
 
@@ -81,7 +81,9 @@ security role.
 6. Repeat for every environment listed in `DATAVERSE_ENVIRONMENTS`.
 
 About the role: a custom role with Read at Organization scope on Solution, Security Role,
-and Field Security Profile, plus Entity/Attribute read, is enough. `System Customizer`
+User, and Field Security Profile, plus Entity/Attribute read, is enough. Read on User and
+Security Role is what lets the tool list who holds System Administrator; without it that pull
+fails on its own and the rest of the audit still runs. `System Customizer`
 works as a quick alternative but grants more than read - prefer the custom read-only role.
 
 **Automated alternative:** `testdata/add-dataverse-app-user.ps1 -ClientId <your CLIENT_ID>`

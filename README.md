@@ -27,8 +27,9 @@ This tool reads the configuration directly, so the findings are based on the liv
 
 **Identity (Microsoft Graph)**
 - App registrations and expired / expiring client secrets and certificates
-- Service principals and which apps hold high-privilege tenant-wide permissions (all-mail, directory write, etc.)
-- Directory roles and how many hold Global Administrator; PIM eligible (just-in-time) versus standing admin access
+- Service principals and which apps hold high-privilege tenant-wide permissions in Microsoft Graph and Exchange Online (all-mail, every mailbox, directory write, etc.)
+- Directory roles and how many hold Global Administrator; PIM eligible (just-in-time) versus standing admin access (no Entra ID P2 licence reads as a Gap: all admin access is standing)
+- Dormant accounts: enabled accounts with no sign-in for 90+ days, and dormant accounts that still hold an admin role (needs Entra ID P1)
 - Conditional Access policies (how many exist, how many are enabled, whether any enforce MFA or a compliant device), security defaults, the authentication methods policy, named locations
 - Intune device compliance policies and the managed-device overview
 - Guest accounts: tenant-wide count and concentration by home domain
@@ -41,15 +42,16 @@ This tool reads the configuration directly, so the findings are based on the liv
 
 **Data platform (Dataverse, per environment)**
 - Whether auditing is turned on (org level, user-access auditing, read-log auditing, retention) and per table
-- Security roles, and whether any custom roles exist or everything defaults to built-in ones
-- Solution inventory (managed vs unmanaged, and what sits in production)
+- Security roles, whether any custom roles exist, and who holds System Administrator (people and the organisation's own application users)
+- Solution inventory, and unmanaged solutions sitting in Production environments
 - Field security profiles and field permissions
 - Email server profiles, mailboxes and queues (the server-side sync surface)
 
 **Cloud infrastructure (Azure ARM, per subscription)**
-- Role assignments, and how many hold Owner / User Access Administrator at subscription scope
+- Role assignments: Owner sprawl (more than 3 owners at subscription scope) and service principals holding Owner or User Access Administrator
 - SQL servers: public network access, minimum TLS version, and "allow all Azure IPs" firewall rules
-- Synapse workspaces: firewall rules
+- Synapse workspaces: public network access and "allow all Azure IPs"
+- Allowed-IP firewall rules on SQL servers and Synapse workspaces, graded by breadth (whole internet, wider than a /16)
 - Key Vaults: RBAC vs legacy access policies, and public network access
 - Network security groups: RDP/SSH rules open to the internet
 - Defender for Cloud plans (Standard vs Free), Log Analytics workspaces and Sentinel onboarding, activity-log diagnostic settings, Logic Apps
@@ -58,7 +60,7 @@ This tool reads the configuration directly, so the findings are based on the liv
 
 `output/assessment-report.md` maps the evidence to Microsoft's Power Platform and Dynamics 365 Security Review: 8 domains, 29 checks (28 unique; 2.5 is a template duplicate of 2.4). Every verdict is tied to an evidence file in `output/`. If that file is missing, the check reads **Not checked** and names the access that would unlock it; the tool never guesses. Checks no API can answer (incident response plan, Customer Lockbox, sensitivity labels, residency adequacy) are marked **MANUAL** with the exact portal path to confirm them.
 
-**Beyond the checklist**, the report and the findings add: Managed Environments coverage, default-environment DLP coverage, legacy/basic-auth detection in the sign-in sample, guest concentration by home domain, Defender for Cloud plan status, and PIM standing versus eligible admin access.
+**Beyond the checklist**, the report and the findings add: Managed Environments coverage, default-environment DLP coverage, legacy/basic-auth detection in the sign-in sample, guest concentration by home domain, Defender for Cloud plan status, PIM standing versus eligible admin access, dormant accounts and dormant admins, System Administrator holders, service identities with full control, Owner sprawl, and firewall-breadth grading. When a pull fails, the matching **Not checked** row quotes the service's own error so the fix is obvious.
 
 ## Quick start
 
@@ -88,6 +90,17 @@ Output lands in `./output` (git-ignored):
 - `assessment-report.md` - the pulls mapped to Microsoft's 8-domain / 29-check review, every verdict tied to its evidence file
 
 Run a single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
+
+**Scope.** Audit exactly the estate you mean: a `scope.json` next to `.env` (start from
+`scope.example.json`) or the `-Scope <file>`, `-Subscriptions`, `-ResourceGroups`,
+`-Environments` and `-Types` parameters of `run-audit.ps1` select subscriptions, resource
+groups, resource readers and Dataverse environments. Blank everywhere means everything the
+app can read, exactly as before. The preflight prints the effective scope, a scoped report
+is labelled **PARTIAL** under its title with "n of m" counts, and a selection the app cannot
+see reads Not checked instead of being dropped (`-StrictScope` stops the run instead).
+`scripts/new-scope.ps1 -FromInventory a.csv,b.csv` writes a scope from portal inventory
+exports without signing in; without `-FromInventory` it lists what the app can see and lets
+you pick.
 
 ## Requirements
 

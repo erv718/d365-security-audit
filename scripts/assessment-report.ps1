@@ -11,6 +11,9 @@
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 $out = Get-OutDir
+# The scope this run covered (output/scope-effective.json, written by check-setup.ps1). On a
+# scoped run the report says PARTIAL under its title and every row says which slice it describes.
+$scope = Read-ScopeEffective
 
 # LJ: load one evidence file. Missing, empty or unparseable = $null (the check reads "Not
 # checked"); a JSON [] stays an empty array (the check reads its zero verdict). -NoEnumerate
@@ -59,6 +62,33 @@ function DlpCovers($policies, $envName) {
         if ($type -eq 'ExceptEnvironments' -and -not $listed) { return $true }
     }
     if ($known) { return $false } else { return $null }
+}
+# A failed pull leaves <name>-ERROR.json holding the HTTP status and the service's own error body.
+# ErrInfo turns it into {status, code, message}, so a licence error becomes a verdict and every
+# "Not checked" row can say why the pull failed. Older runs stored only the status text.
+function ErrInfo($name) {
+    $p = Join-Path $out ($name -replace '\.json$', '-ERROR.json')
+    if (-not (Test-Path $p)) { return $null }
+    $t = ''
+    try { $t = "$((Get-Content $p -Raw | ConvertFrom-Json).error)" } catch { return $null }
+    if (-not $t) { return $null }
+    $status = $null; $code = $null; $msg = $null
+    if ($t -match '\b([45]\d\d)\b') { $status = $Matches[1] }
+    if ($t -match '"code"\s*:\s*"([^"]+)"') { $code = $Matches[1] }
+    if ($t -match '"message"\s*:\s*"((?:[^"\\]|\\.)*)"') {
+        $msg = $Matches[1]
+        try { $msg = [regex]::Unescape($msg) } catch {}
+        if ($msg -match '"Message"\s*:\s*"([^"]+)"') { $msg = $Matches[1] }
+        $msg = ($msg -replace '\s+', ' ').Trim()
+    }
+    return [pscustomobject]@{ status = $status; code = $code; message = $msg; text = $t }
+}
+function ErrNote($i) {
+    if (-not $i) { return '' }
+    $what = (@($i.status, $i.code) | Where-Object { $_ }) -join ' '
+    $why = if ($i.message) { "$($i.message)" } else { "$($i.text)" }
+    if ($why.Length -gt 180) { $why = $why.Substring(0, 180) + '...' }
+    return " Pull failed$(if($what){" ($what)"}): $why"
 }
 
 # ---------- pre-load / aggregate ----------
@@ -145,6 +175,98 @@ foreach ($f in $queueFiles) { $q = First (LJ $f.Name); if ($q -and $null -ne $q.
 $fpFiles = @(LFiles 'dvplus-*-fieldpermissions.json') + @(LFiles 'dv-*-fieldsec.json'); $fpReadN = 0; $fieldPerms = 0
 foreach ($f in $fpFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $fpReadN++; $fieldPerms += Cnt $x }
 
+# Table-level auditing on the key security tables (dv-<env>-entities.json, basic Dataverse sweep).
+$keyTables = @('account', 'contact', 'systemuser', 'role', 'team', 'businessunit', 'fieldsecurityprofile')
+$entReadN = 0; $keyAuditOff = @(); $keyAuditOnN = 0
+foreach ($f in @(LFiles 'dv-*-entities.json')) {
+    $ents = LJ $f.Name
+    if ($null -eq $ents) { continue }
+    $entReadN++
+    $envName = $f.BaseName -replace '^dv-' -replace '-entities$'
+    foreach ($e in @($ents)) {
+        if (-not $e -or $keyTables -notcontains "$($e.LogicalName)") { continue }
+        $a = $e.IsAuditEnabled
+        if ($null -ne $a -and -not ($a -is [bool]) -and ($a.PSObject.Properties.Name -contains 'Value')) { $a = $a.Value }
+        if ($a -eq $false) { $keyAuditOff += "$envName/$($e.LogicalName)" } elseif ($a -eq $true) { $keyAuditOnN++ }
+    }
+}
+
+# Who holds System Administrator (dv-<env>-users.json): people vs the organisation's own
+# application users; built-in and Microsoft first-party '#' accounts excluded.
+$skuByHost = @{}
+foreach ($e in @($ppEnv)) {
+    if (-not $e -or -not $e.properties -or -not $e.properties.linkedEnvironmentMetadata) { continue }
+    $iu = "$($e.properties.linkedEnvironmentMetadata.instanceUrl)"
+    if ($iu) { try { $skuByHost[([Uri]$iu).Host.Split('.')[0].ToLower()] = "$($e.properties.environmentSku)" } catch {} }
+}
+$msTenants = @('f8cdef31-a31e-4b4a-93e4-5f571e91255a', '72f988bf-86f1-41af-91ab-2d7cd011db47')
+$appOwner = @{}
+foreach ($sp in @($sps)) { if ($sp -and $sp.appId) { $appOwner["$($sp.appId)".ToLower()] = "$($sp.appOwnerOrganizationId)".ToLower() } }
+$usersReadN = 0; $saPeople = 0; $saApps = 0; $saBusy = @(); $saReview = @()
+foreach ($f in @(LFiles 'dv-*-users.json')) {
+    $u = LJ $f.Name
+    if ($null -eq $u) { continue }
+    $usersReadN++
+    $envName = $f.BaseName -replace '^dv-' -replace '-users$'
+    $sa = @($u | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 -and "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.fullname)" -notlike '#*' -and "$($_.accessmode)" -ne '3' })
+    $pN = @($sa | Where-Object { -not $_.applicationid }).Count
+    $aN = @($sa | Where-Object { $_.applicationid -and $msTenants -notcontains $appOwner["$($_.applicationid)".ToLower()] }).Count
+    $saPeople += $pN; $saApps += $aN
+    if ($pN -gt 3) { if ($skuByHost[$envName.ToLower()] -eq 'Production') { $saBusy += "$envName ($pN)" } else { $saReview += "$envName ($pN)" } }
+}
+$saNote = ''
+if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people, $saApps to non-Microsoft application users$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})." }
+else {
+    $uErr = @(LFiles 'dv-*-users-ERROR.json')
+    if ($uErr.Count) { $saNote = " System Administrator holders not read.$(ErrNote (ErrInfo ($uErr[0].Name -replace '-ERROR\.json$', '.json'))) Give the app user Read (Organization) on User and Security Role." }
+}
+$rbacReadN = 0
+foreach ($f in @(LFiles 'arm-*-rbac.json')) { if ($null -ne (LJ $f.Name)) { $rbacReadN++ } }
+
+# Azure activity-log export (diagnostic settings) and Log Analytics workspaces.
+$diagReadN = 0; $diagSubs = 0; $diagEh = 0; $diagLa = 0; $diagSa = 0
+foreach ($f in @(LFiles 'arm-*-diagnostic-settings.json')) {
+    $d = LJ $f.Name
+    if ($null -eq $d) { continue }
+    $diagReadN++
+    $items = @($d | Where-Object { $_ -and $_.properties })
+    if ($items.Count) { $diagSubs++ }
+    foreach ($x in $items) {
+        if ($x.properties.eventHubAuthorizationRuleId) { $diagEh++ }
+        if ($x.properties.workspaceId) { $diagLa++ }
+        if ($x.properties.storageAccountId) { $diagSa++ }
+    }
+}
+$laReadN = 0; $laN = 0; $laRet = @()
+foreach ($f in @(LFiles 'arm-*-loganalytics.json')) {
+    $w = LJ $f.Name
+    if ($null -eq $w) { continue }
+    $laReadN++
+    foreach ($x in @($w | Where-Object { $_ -and $_.properties })) { $laN++; if ($x.properties.retentionInDays) { $laRet += [int]$x.properties.retentionInDays } }
+}
+$logNote = ''
+if ($diagReadN -gt 0) { $logNote = " Azure activity-log export: diagnostic settings in $diagSubs of $diagReadN subscription(s) read$(if($diagEh){", $diagEh to an Event Hub (typically forwarding to an external SIEM)"})$(if($diagLa){", $diagLa to Log Analytics"})$(if($diagSa){", $diagSa to a storage account"}). Azure activity logs are not Power Platform/Dataverse activity." }
+if ($laReadN -gt 0) {
+    $logNote += " $laN Log Analytics workspace(s)"
+    if ($laRet.Count) { $logNote += ", retention $((@($laRet) | Measure-Object -Minimum).Minimum)-$((@($laRet) | Measure-Object -Maximum).Maximum) days" }
+    $logNote += '.'
+}
+
+# Authentication methods (phishable SMS/voice) and named locations, for 1.4.
+$amp = LJ 'authentication-methods-policy.json'
+$weakOn = @()
+if (Have $amp) { foreach ($m in @($amp.authenticationMethodConfigurations)) { if ($m -and "$($m.state)" -eq 'enabled' -and "$($m.id)" -in 'Sms', 'Voice') { $weakOn += "$($m.id)" } } }
+$namedLoc = LJ 'ca-named-locations.json'
+
+# Licence errors become verdicts: PIM needs Entra ID P2, Intune must exist in the tenant.
+$pimErr = ErrInfo 'pim-eligible.json'
+$pimUnlicensed = (-not (Have $pimElig)) -and $pimErr -and ("$($pimErr.text)" -match 'AadPremiumLicenseRequired|Entra ID P2|ID Governance licen')
+$intuneErr = ErrInfo 'intune-compliance-policies.json'
+$intuneAbsent = (-not (Have $intune)) -and $intuneErr -and ("$($intuneErr.text)" -match 'not applicable to target tenant')
+$gaN = 0
+foreach ($r in @($dirRoles)) { if ($r -and $r.role -eq 'Global Administrator') { $gaN = [int]$r.memberCount } }
+$svcFindings = Cnt ($findings | Where-Object { $_.Area -eq 'Service identities' })
+
 $expiredSecrets = 0
 if (Have $apps) {
     $now = [datetimeoffset]::Now
@@ -203,7 +325,14 @@ $regions     = (@($envAll | ForEach-Object { $_.properties.azureRegion } | Where
 
 # ---------- checks ----------
 $checks = New-Object System.Collections.ArrayList
-function Chk($no,$dom,$check,$status,$ev) { [void]$checks.Add([pscustomobject]@{ No=$no; Domain=$dom; Check=$check; Status=$status; Evidence=$ev }) }
+# $plane says what the evidence spans: 'tenant' (Graph, Power Platform governance, manual items),
+# 'dataverse' (per environment) or 'azure' (per subscription). On a scoped run it becomes the
+# [tenant-wide] / [scoped: ...] suffix and the row's Scope field; a full run keeps the plain shape.
+function Chk($no,$dom,$check,$status,$ev,$plane = 'tenant') {
+    $row = [ordered]@{ No=$no; Domain=$dom; Check=$check; Status=$status; Evidence=$ev }
+    if ($scope.partial) { $tag = Get-ScopeTag $scope $plane; $row.Evidence = "$ev [$tag]"; $row.Scope = $tag }
+    [void]$checks.Add([pscustomobject]$row)
+}
 
 # Domain 1 - Entra ID configuration
 if (Have $ppEnv) {
@@ -215,10 +344,15 @@ if (Have $ppEnv) {
 }
 Chk '1.1' '1 Entra ID' 'Entra integrated with D365' $s11 $e11
 
-if ($rolesEnvN -eq 0) { $s12 = 'Not checked'; $e12 = 'Security roles not read: set DATAVERSE_ENVIRONMENTS in .env so the basic Dataverse sweep pulls roles per environment.' }
-elseif ($customRoles -eq 0) { $s12 = 'Gap'; $e12 = "0 custom security roles across $rolesEnvN environment(s) read - only built-in roles are ever assigned." }
-else { $s12 = 'Partial'; $e12 = "$customRoles custom security role(s) across $rolesEnvN environment(s) read; whether they are least-privilege needs a role review." }
-Chk '1.2' '1 Entra ID' 'Roles least privilege' $s12 $e12
+if ($rolesEnvN -eq 0 -and $usersReadN -eq 0) { $s12 = 'Not checked'; $e12 = 'Security roles and role holders not read: set DATAVERSE_ENVIRONMENTS in .env (or let the Power Platform sweep discover the environments) so the basic Dataverse sweep pulls them, and give the app user Read on Security Role and User.' }
+else {
+    if ($rolesEnvN -eq 0) { $s12 = 'Partial'; $e12 = 'Security role definitions not read.' }
+    elseif ($customRoles -eq 0) { $s12 = 'Gap'; $e12 = "0 custom security roles across $rolesEnvN environment(s) read - only built-in roles are ever assigned." }
+    else { $s12 = 'Partial'; $e12 = "$customRoles custom security role(s) across $rolesEnvN environment(s) read; whether they are least-privilege needs a role review." }
+    if ($saBusy.Count) { $s12 = 'Gap' }
+    $e12 += $saNote
+}
+Chk '1.2' '1 Entra ID' 'Roles least privilege' $s12 $e12 'dataverse'
 
 if (-not (Have $ppEnv)) { $sgStatus = 'Not checked'; $sgEv = 'Environment list not read (Power Platform admin API; register the app with New-PowerAppManagementApp).' }
 elseif ($envEligible.Count -eq 0) { $sgStatus = 'Not checked'; $sgEv = "No environment where a security group applies: Microsoft does not allow one on Default or Developer environments, Teams environments are bound to their team automatically, and $envNoDvN of the $envAllN environment(s) read have no Dataverse." }
@@ -235,15 +369,19 @@ elseif ($caTotal -eq 0) { $s14 = 'Gap'; $e14 = 'No Conditional Access policies e
 elseif ($caMfa -eq 0) { $s14 = 'Gap'; $e14 = "$caTotal policies, $caOn enabled, none enforce MFA." }
 else { $s14 = 'Aligned'; $e14 = "$caTotal policies, $caOn enabled, $caMfa enforce MFA." }
 if ((Have $secDef) -and $s14 -ne 'Partial') { $e14 += " Security defaults: $(if($sdOn){'ON'}else{'off'})." }
+if (Have $amp) { $e14 += " SMS/voice sign-in enabled in the Authentication methods policy: $(if($weakOn.Count){$weakOn -join ', '}else{'no'})$(if("$($amp.policyMigrationState)" -ne 'migrationComplete'){' (legacy MFA/SSPR settings not migrated, so they may still allow SMS/voice; not read)'})." }
+if (Have $namedLoc) { $e14 += " $(Cnt $namedLoc) named location(s)." }
 Chk '1.4' '1 Entra ID' 'Conditional Access' $s14 $e14
 
 $intuneHint = 'Intune not read (needs DeviceManagementConfiguration.Read.All with admin consent, and an active Intune licence).'
-if (-not (Have $intune)) { $s15 = 'Not checked'; $e15 = $intuneHint }
+if ($intuneAbsent) { $s15 = 'Gap'; $e15 = "Intune is not provisioned in this tenant (Graph returned 'Request not applicable to target tenant'), so no device is managed by Intune." }
+elseif (-not (Have $intune)) { $s15 = 'Not checked'; $e15 = $intuneHint }
 elseif ($intuneN -eq 0) { $s15 = 'Gap'; $e15 = 'Intune readable but 0 device compliance policies exist.' }
 else { $s15 = 'Partial'; $e15 = "$intuneN compliance policies found$(if($devOverview -and $null -ne $devOverview.enrolledDeviceCount){"; $($devOverview.enrolledDeviceCount) enrolled device(s)"}); assignment scope to review." }
 Chk '1.5' '1 Entra ID' 'Intune device management' $s15 $e15
 
-if (-not (Have $intune)) { $s16 = 'Not checked'; $e16 = $intuneHint }
+if ($intuneAbsent) { $s16 = 'Gap'; $e16 = 'Intune is not provisioned in this tenant, so device compliance cannot be required for D365 access.' }
+elseif (-not (Have $intune)) { $s16 = 'Not checked'; $e16 = $intuneHint }
 elseif ($intuneN -eq 0) { $s16 = 'Gap'; $e16 = 'No Intune compliance policy exists, so no device state can be required for D365 access.' }
 else { $s16 = 'Partial'; $e16 = "$intuneN Intune compliance policies; $caCompliant enabled Conditional Access policies require a compliant device$(if($caCompliant -eq 0){' - nothing ties device compliance to access, so it is not enforced for D365'}else{' (confirm they target Dataverse/D365)'})." }
 Chk '1.6' '1 Entra ID' 'Device compliance enforced for D365' $s16 $e16
@@ -251,8 +389,12 @@ Chk '1.6' '1 Entra ID' 'Device compliance enforced for D365' $s16 $e16
 # Domain 2 - Authentication
 if (-not (Have $apps)) { $s21 = 'Not checked'; $e21 = 'App registrations not read (needs Application.Read.All with admin consent).' }
 else {
-    if ($riskyN -gt 0) { $s21 = 'Partial' } else { $s21 = 'Aligned' }
-    $e21 = "$(Cnt $apps) app registrations$(if(Have $sps){" and $(Cnt $sps) service principals"}) inventoried; $riskyN high-privilege tenant-wide permission(s) flagged in the findings. Not verified: that each integration runs under its own least-privilege identity."
+    $notRead21 = @()
+    if (-not (Have $asnGraph)) { $notRead21 += 'Graph app-role assignments' }
+    if ($rbacReadN -eq 0) { $notRead21 += 'Azure role assignments' }
+    if ($usersReadN -eq 0) { $notRead21 += 'Dataverse role holders' }
+    if ($riskyN -gt 0 -or $svcFindings -gt 0 -or $notRead21.Count) { $s21 = 'Partial' } else { $s21 = 'Aligned' }
+    $e21 = "$(Cnt $apps) app registrations$(if(Have $sps){" and $(Cnt $sps) service principals"}) inventoried; $riskyN high-privilege tenant-wide permission(s) and $svcFindings service-identity finding(s) (service principals owning subscriptions, application users with System Administrator) in the findings. Not verified: that each integration runs under its own least-privilege identity.$(if($notRead21.Count){" Not read: $($notRead21 -join ', ')."})"
 }
 Chk '2.1' '2 Authentication' 'Service-to-service app access' $s21 $e21
 
@@ -262,7 +404,8 @@ if ((Have $apps) -and (Have $sps)) {
 } else { $s22 = 'Not checked'; $e22 = 'Inventory incomplete: applications.json or servicePrincipals.json not read (needs Application.Read.All with admin consent).' }
 Chk '2.2' '2 Authentication' 'App/user access inventory' $s22 $e22
 
-if (-not (Have $pimElig)) { $s23 = 'Not checked'; $e23 = 'PIM not read (needs RoleManagement.Read.Directory with admin consent; if pim-eligible-ERROR.json cites a licence, Entra ID P2/PIM is not in use and all admin access is standing).' }
+if ($pimUnlicensed) { $s23 = 'Gap'; $e23 = "PIM is not available in this tenant: the service returned $(if($pimErr.code){$pimErr.code}else{'a licence error'}) (no Entra ID P2 / ID Governance licence), so every admin role is standing, permanent access$(if($gaN){"; $gaN Global Administrator(s) hold it permanently"}). Fix: license Entra ID P2 and make admin roles PIM-eligible (Entra admin center > Identity governance > Privileged Identity Management)." }
+elseif (-not (Have $pimElig)) { $s23 = 'Not checked'; $e23 = 'PIM not read (needs RoleManagement.Read.Directory with admin consent; if pim-eligible-ERROR.json cites a licence, Entra ID P2/PIM is not in use and all admin access is standing).' }
 elseif ($pimEligN -eq 0) { $s23 = 'Gap'; $e23 = "0 PIM-eligible assignments - every admin role is standing (permanent) access$(if(Have $pimActive){"; $pimActiveN active assignment(s), $pimPermanent permanent"})." }
 else { $s23 = 'Aligned'; $e23 = "$pimEligN PIM-eligible (just-in-time) assignment(s)$(if(Have $pimActive){"; $pimActiveN active, $pimPermanent of them permanent - review those"})." }
 Chk '2.3' '2 Authentication' 'PIM / segregation of duties' $s23 $e23
@@ -270,55 +413,68 @@ Chk '2.4' '2 Authentication' 'Security groups restrict environment access' $sgSt
 Chk '2.5' '2 Authentication' 'Security groups (MS-template duplicate of 2.4)' $sgStatus 'Duplicate of 2.4 in the Microsoft template - same verdict; excluded from the tally.'
 
 # Domain 3 - Data security
-$e31 = 'Platform fact, not read from your tenant: Dataverse/D365 encrypt data at rest (Microsoft-managed keys by default) and in transit (TLS 1.2+).'
-if ($sqlN -gt 0) {
-    $e31 += " Verified from Azure: $($sqlN - $sqlTlsWeak.Count - $sqlTlsUnset) of $sqlN SQL server(s) enforce minimum TLS 1.2$(if($sqlTlsWeak.Count){'; older TLS still accepted on: ' + (Names ($sqlTlsWeak | ForEach-Object { $_.name }))})."
-} else { $e31 += ' Nothing tenant-specific verified (no Azure SQL servers read).' }
-$e31 += ' Not verified: customer-managed keys - PPAC > Manage > Environments > (env) > See all > Encryption.'
-Chk '3.1' '3 Data security' 'Encryption at rest / in transit' $(if($sqlTlsWeak.Count -gt 0){'Partial'}else{'Aligned'}) $e31
+$e31 = 'Platform fact: Dataverse/D365 encrypt data at rest (Microsoft-managed keys by default) and in transit (TLS 1.2+).'
+if (-not (Have $ppEnv) -and $sqlN -eq 0) {
+    $s31 = 'Not checked'
+    $e31 += ' Nothing tenant-specific was read (no environment inventory, no Azure SQL servers), so the platform default is not confirmed for this tenant.'
+} else {
+    if ($sqlTlsWeak.Count -gt 0) { $s31 = 'Partial' } else { $s31 = 'Aligned' }
+    if (Have $ppEnv) { $e31 += " $($envDv.Count) Dataverse environment(s) inventoried on that platform." }
+    if ($sqlN -gt 0) { $e31 += " Adjacent Azure data stores: $($sqlN - $sqlTlsWeak.Count - $sqlTlsUnset) of $sqlN SQL server(s) enforce minimum TLS 1.2$(if($sqlTlsWeak.Count){'; older TLS still accepted on: ' + (Names ($sqlTlsWeak | ForEach-Object { $_.name }))})." }
+}
+$e31 += ' Not verified: whether customer-managed keys are required by policy and enabled - PPAC > Manage > Environments > (env) > See all > Encryption.'
+Chk '3.1' '3 Data security' 'Encryption at rest / in transit' $s31 $e31 'azure'
 Chk '3.2' '3 Data security' 'Customer Lockbox + consent' 'MANUAL' "Tenant setting not exposed to this app. Confirm: PPAC > Manage > Tenant settings > Customer Lockbox (enable); requests under Security > Compliance > Customer Lockbox. Note: the policy only applies to Managed Environments$(if(Have $ppEnv){" ($managedN of $envAllN here)"})."
 Chk '3.3' '3 Data security' 'PII / sensitivity labels' 'MANUAL' 'Confirm in the Microsoft Purview portal (purview.microsoft.com) > Solutions > Information Protection > Sensitivity labels, and Policies > Auto-labeling policies; Dataverse columns are labeled through Purview Data Map (each Dataverse environment registered as a data source).'
 if ($envN -eq 0) { $s34 = 'Not checked'; $e34 = 'Dataverse org settings not read (no environment reachable as an Application User).' }
-elseif ($retentionSet -gt 0) { $s34 = 'Partial'; $e34 = "Audit retention set in $retentionSet of $envN environment(s); broader retention to confirm in Purview (purview.microsoft.com > Solutions > Data Lifecycle Management)." }
-else { $s34 = 'Gap'; $e34 = "Audit retention set in 0 of $envN environment(s) (PPAC > Manage > Environments > (env) > Settings > Audit and logs > Audit settings > Retain these logs for)." }
-Chk '3.4' '3 Data security' 'Data retention' $s34 $e34
+elseif ($retentionSet -gt 0) { $s34 = 'Partial'; $e34 = "Audit-log retention is set in $retentionSet of $envN environment(s) - that is how long the audit trail is kept, not a business-data retention policy. Not verified: Dataverse long-term data retention and Purview retention for D365 data (Power Apps > Tables > (table) > Properties > Long-term retention; purview.microsoft.com > Solutions > Data Lifecycle Management)." }
+else { $s34 = 'Gap'; $e34 = "Audit-log retention is not set in any of $envN environment(s) (PPAC > Manage > Environments > (env) > Settings > Audit and logs > Audit settings > Retain these logs for). Business-data retention (Dataverse long-term retention, Purview) is a separate manual confirmation." }
+Chk '3.4' '3 Data security' 'Data retention' $s34 $e34 'dataverse'
 if ($emailReadN -eq 0) { $s35 = 'Not checked'; $e35 = 'Email server profiles not read (no environment reachable as an Application User).' }
 elseif ($emailProfiles -gt 0) { $s35 = 'Partial'; $e35 = "$emailProfiles email server profile(s) across $($emailReadN) environment(s); server-side sync auth (OAuth vs basic) to confirm per profile." }
 else { $s35 = 'Not in use'; $e35 = "0 email server profiles in $($emailReadN) environment(s)." }
-Chk '3.5' '3 Data security' 'Record sync / Outlook' $s35 $e35
+Chk '3.5' '3 Data security' 'Record sync / Outlook' $s35 $e35 'dataverse'
 if ($emailReadN -eq 0) { $s36 = 'Not checked'; $e36 = 'Mailboxes/queues not read (no environment reachable as an Application User).' }
 elseif ($emailProfiles -le $emailReadN) { $s36 = 'Not in use'; $e36 = "Only the default email profile per environment ($emailProfiles across $($emailReadN)); $mailboxN mailbox record(s), $queueN queue(s) - no custom mailbox integration in active use." }
 else { $s36 = 'Partial'; $e36 = "$emailProfiles email profiles across $($emailReadN) environment(s) (more than the default), $mailboxN mailbox record(s), $queueN queue(s); review which integrations are approved." }
-Chk '3.6' '3 Data security' 'Mailbox / queue integration' $s36 $e36
+Chk '3.6' '3 Data security' 'Mailbox / queue integration' $s36 $e36 'dataverse'
 
 # Domain 4 - Auditing & monitoring
 if ($envN -eq 0) { $s41 = 'Not checked'; $e41 = 'Dataverse org settings not read (no environment reachable as an Application User).' }
 elseif ($auditOn -eq 0) { $s41 = 'Gap'; $e41 = "Org auditing OFF in all $envN environment(s) read (PPAC > Manage > Environments > (env) > Settings > Audit and logs > Audit settings > Start auditing)." }
 elseif ($auditOn -lt $envN) { $s41 = 'Partial'; $e41 = "Org auditing ON in $auditOn of $envN environment(s) read." }
 else { $s41 = 'Aligned'; $e41 = "Org auditing ON in all $envN environment(s) read." }
-Chk '4.1' '4 Auditing' 'D365 auditing enabled' $s41 $e41
+if ($entReadN -gt 0) {
+    if ($keyAuditOff.Count) {
+        $e41 += " Table-level auditing OFF on key table(s): $(Names $keyAuditOff 10). Org auditing records nothing for a table whose own audit flag is off (Power Apps > Tables > (table) > Properties > Audit changes to its data)."
+        if ($s41 -eq 'Aligned') { $s41 = 'Partial' }
+    } elseif ($keyAuditOnN -eq ($keyTables.Count * $entReadN)) { $e41 += " Key tables ($($keyTables -join ', ')) have table-level auditing ON in all $entReadN environment(s) read." }
+    else { $e41 += " Table-level auditing confirmed ON for $keyAuditOnN of $($keyTables.Count * $entReadN) key-table entries; the rest were not in the table metadata read." }
+}
+Chk '4.1' '4 Auditing' 'D365 auditing enabled' $s41 $e41 'dataverse'
 $e42 = 'Depends on 4.1.'
 if ($envN -gt 0) {
     $e42 += " User-access auditing ON in $userAccessOn of $envN"
     if ($readAuditKnown -gt 0) { $e42 += "; read-log auditing ON in $readAuditOn of $readAuditKnown" }
     $e42 += ' environment(s).'
 }
-Chk '4.2' '4 Auditing' 'Events / user activity logged' $(if($envN -eq 0){'Not checked'}elseif($auditOn -eq 0){'Gap'}else{'Partial'}) $e42
+Chk '4.2' '4 Auditing' 'Events / user activity logged' $(if($envN -eq 0){'Not checked'}elseif($auditOn -eq 0){'Gap'}else{'Partial'}) $e42 'dataverse'
 if ($sentinelReadN -eq 0) { $s43 = 'Not checked'; $e43 = 'Azure Log Analytics/Sentinel not read (needs Reader on the subscriptions).' }
 elseif ($sentinelOn) { $s43 = 'Partial'; $e43 = "Sentinel enabled on at least one of $wsN Log Analytics workspace(s); whether Power Platform/Dataverse logs are ingested is not verified." }
 else { $s43 = 'Gap'; $e43 = "No Sentinel onboarding on $wsN Log Analytics workspace(s) across $($sentinelReadN) subscription(s)." }
-Chk '4.3' '4 Auditing' 'SIEM / monitoring over Power Platform' $s43 $e43
-Chk '4.4' '4 Auditing' 'Purview / Sentinel integration' $(if($sentinelOn){'Partial'}else{'Not checked'}) $(if($sentinelOn){'Sentinel state read; Purview audit to confirm: purview.microsoft.com > Solutions > Audit.'}else{'Sentinel not found or not read; Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit.'})
+Chk '4.3' '4 Auditing' 'SIEM / monitoring over Power Platform' $s43 ($e43 + $logNote) 'azure'
+Chk '4.4' '4 Auditing' 'Purview / Sentinel integration' $(if($sentinelOn){'Partial'}else{'Not checked'}) $(if($sentinelOn){'Sentinel state read; Purview audit to confirm: purview.microsoft.com > Solutions > Audit.'}else{'Sentinel not found or not read; Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit.'}) 'azure'
 
 # Domain 5 - Security settings
 if ($rolesEnvN -eq 0) { $s51 = 'Not checked'; $e51 = 'Security roles not read: set DATAVERSE_ENVIRONMENTS in .env so the basic Dataverse sweep pulls roles.' }
 elseif ($customRoles -eq 0) { $s51 = 'Gap'; $e51 = "0 custom roles in $rolesEnvN environment(s) read - only built-in roles available to assign." }
 else { $s51 = 'Partial'; $e51 = "$customRoles custom role(s) in $rolesEnvN environment(s) read; privilege depth per role to review." }
-Chk '5.1' '5 Security settings' 'Security role design' $s51 $e51
+$e51 += $saNote
+Chk '5.1' '5 Security settings' 'Security role design' $s51 $e51 'dataverse'
 if ($fpReadN -eq 0) { $s52 = 'Not checked'; $e52 = 'Field security profiles/permissions not read (no environment reachable as an Application User).' }
 elseif ($fieldPerms -gt 0) { $s52 = 'Partial'; $e52 = "$fieldPerms field-security permission(s)/profile(s) across $($fpReadN) file(s); business-unit and record-level design to review." }
 else { $s52 = 'Gap'; $e52 = "0 field-security permissions/profiles in $($fpReadN) environment(s) read - no column-level security in use." }
-Chk '5.2' '5 Security settings' 'Field-level / record / BU security' $s52 $e52
+Chk '5.2' '5 Security settings' 'Field-level / record / BU security' $s52 $e52 'dataverse'
 $dlpN = Cnt $dlp
 if (-not (Have $dlp)) { $s53 = 'Not checked'; $e53 = 'DLP policies not read (needs the app registered as a Power Platform management app: New-PowerAppManagementApp).' }
 elseif ($dlpN -eq 0) { $s53 = 'Gap'; $e53 = 'No DLP (connector data) policy exists - any connector can be combined with any other in every environment. Fix: PPAC > Security > Data and privacy > Data policy > New Policy.' }
@@ -329,7 +485,7 @@ else {
 Chk '5.3' '5 Security settings' 'DLP / IRM / classification' $s53 $e53
 
 # Domain 6 - Integration security
-Chk '6.1' '6 Integration' 'External integration security' $(if($logicReadN -eq 0){'Not checked'}else{'Partial'}) $(if($logicReadN -eq 0){'Logic Apps not read (needs Reader on the subscriptions).'}else{"$logicApps Logic App workflow(s) inventoried across $($logicReadN) subscription(s); per-integration auth to review."})
+Chk '6.1' '6 Integration' 'External integration security' $(if($logicReadN -eq 0){'Not checked'}else{'Partial'}) $(if($logicReadN -eq 0){'Logic Apps not read (needs Reader on the subscriptions).'}else{"$logicApps Logic App workflow(s) inventoried across $($logicReadN) subscription(s); per-integration auth to review."}) 'azure'
 Chk '6.2' '6 Integration' 'API keys / credentials / tokens' $(if(-not (Have $apps)){'Not checked'}elseif($expiredSecrets -gt 0){'Gap'}else{'Partial'}) $(if(-not (Have $apps)){'App credentials not read (needs Application.Read.All with admin consent).'}else{"$expiredSecrets expired app credential(s) still present across $(Cnt $apps) app registrations; secret rotation/vaulting practice to confirm."})
 
 # Domain 7 - Incident response
@@ -338,7 +494,7 @@ $defPath = 'Azure portal > Microsoft Defender for Cloud > Environment settings >
 if ($defReadN -eq 0) { $s72 = 'MANUAL'; $e72 = "Defender for Cloud plans not read (needs Reader on the subscriptions). Confirm at $defPath; the pen-test program itself is a process to confirm manually." }
 elseif ($defStd.Count -gt 0) { $s72 = 'Partial'; $e72 = "Defender for Cloud plans on Standard tier in $($defReadN) subscription(s) read: $($defStd -join ', ')$(if($defFree.Count){"; still Free: $($defFree -join ', ')"})$(if($defOther.Count){"; other Standard entries not counted: $($defOther -join ', ')"}). Partial proxy only - vulnerability scanning covers those workloads; a pen-test program is a manual confirmation." }
 else { $s72 = 'MANUAL'; $e72 = "All $($defFree.Count) documented Defender for Cloud plans are on the Free tier in $($defReadN) subscription(s) read$(if($defOther.Count){" (Standard entries not counted: $($defOther -join ', '))"}) - no paid vulnerability scanning. Enable at $defPath; confirm the pen-test program manually." }
-Chk '7.2' '7 Incident response' 'Vulnerability scanning / pen testing' $s72 $e72
+Chk '7.2' '7 Incident response' 'Vulnerability scanning / pen testing' $s72 $e72 'azure'
 
 # Domain 8 - Compliance
 $e81Path = 'Confirm: PPAC > Manage > Environments (Region column); M365 admin center (admin.microsoft.com) > Settings > Org settings > Organization profile > Data location.'
@@ -347,14 +503,48 @@ elseif (Have $ppEnv) { $e81 = "Environment inventory read but it lists no enviro
 else { $e81 = "Region not read (Power Platform admin API); residency adequacy is a legal call. $e81Path" }
 Chk '8.1' '8 Compliance' 'Data sovereignty / residency' 'MANUAL' $e81
 
+# A "Not checked" row names the access that unlocks it; when the pull itself failed, append the
+# service's own reason from the matching *-ERROR.json (first failure shown, the rest counted).
+$dvOrg = @('dv-*-org.json', 'dvplus-*-org-settings.json')
+$errSource = @{
+    '1.1' = @('pp-environments.json'); '1.3' = @('pp-environments.json'); '2.4' = @('pp-environments.json'); '2.5' = @('pp-environments.json')
+    '1.2' = @('dv-*-roles.json', 'dv-*-users.json'); '5.1' = @('dv-*-roles.json', 'dv-*-users.json')
+    '1.4' = @('ca-policies.json')
+    '1.5' = @('intune-compliance-policies.json'); '1.6' = @('intune-compliance-policies.json')
+    '2.1' = @('applications.json'); '2.2' = @('applications.json', 'servicePrincipals.json'); '6.2' = @('applications.json')
+    '2.3' = @('pim-eligible.json')
+    '3.4' = $dvOrg; '4.1' = $dvOrg; '4.2' = $dvOrg
+    '3.5' = @('dvplus-*-emailprofiles.json'); '3.6' = @('dvplus-*-emailprofiles.json')
+    '4.3' = @('arm-*-sentinel.json'); '4.4' = @('arm-*-sentinel.json')
+    '5.2' = @('dvplus-*-fieldpermissions.json', 'dv-*-fieldsec.json')
+    '5.3' = @('pp-dlp-policies.json')
+    '6.1' = @('arm-*-logicapps.json')
+}
+foreach ($c in $checks) {
+    if ($c.Status -ne 'Not checked' -or -not $errSource.ContainsKey($c.No)) { continue }
+    $globs = @($errSource[$c.No] | ForEach-Object { $_ -replace '\.json$', '-ERROR.json' })
+    $errFiles = @(foreach ($g in $globs) { LFiles $g })
+    if ($errFiles.Count -eq 0) { continue }
+    $note = ErrNote (ErrInfo ($errFiles[0].Name -replace '-ERROR\.json$', '.json'))
+    if ($errFiles.Count -gt 1) { $note += " ($($errFiles.Count) failed pulls: output/$($globs -join ', output/'))" }
+    if ($c.PSObject.Properties.Name -contains 'Scope' -and $c.Scope) { $c.Evidence = $c.Evidence.Replace(" [$($c.Scope)]", "$note [$($c.Scope)]") } else { $c.Evidence = "$($c.Evidence)$note" }
+}
+
 # ---------- output ----------
 $order  = @{ 'Gap'=0; 'Not in use'=1; 'Partial'=2; 'Not checked'=3; 'MANUAL'=4; 'Aligned'=5 }
 $unique = @($checks | Where-Object { $_.No -ne '2.5' })
 $tally  = $unique | Group-Object Status | Sort-Object Name | ForEach-Object { "$($_.Name): $($_.Count)" }
 $manual = @($unique | Where-Object { $_.Status -eq 'MANUAL' })
 
+$banner = Get-ScopeBanner $scope
 $md = @()
 $md += "# D365 / Power Platform Security Assessment"
+$md += ""
+$md += "**$banner**"
+if ($scope.partial) {
+    $md += ""
+    $md += "Verdicts below describe the selected scope only. Rows marked [tenant-wide] cover the whole tenant regardless of scope; a selection the app could not see reads Not checked. Do not present this report as a complete assessment."
+}
 $md += ""
 $md += "Based on Microsoft's Power Platform & Dynamics 365 Security Review: 8 domains, 29 checks (28 unique - 2.5 is an MS-template duplicate of 2.4), read from the live configuration and extended with deeper infrastructure and credential-hygiene checks that an interview-based review does not cover."
 $md += ""
@@ -401,10 +591,13 @@ $md += "- Each evidence cell above names the portal path where a human confirms 
 $mdPath = Join-Path $out 'assessment-report.md'
 $md -join "`n" | Out-File -Encoding utf8 $mdPath
 Save-Json $checks 'assessment-report.json' | Out-Null
+# The banner also goes into scope-effective.json so run-audit.ps1 can repeat it at the very end.
+Update-ScopeEffective { param($x) Set-ScopeField $x 'banner' $banner } | Out-Null
 
 Write-Host ""
 Write-Host "==================== ASSESSMENT (29 checks, 28 unique) ====================" -ForegroundColor Green
 $checks | Sort-Object { $order[$_.Status] }, No | Format-Table No, Domain, Status, Check -AutoSize
 Write-Host ("Tally (28 unique): " + ($tally -join '  |  ')) -ForegroundColor Yellow
+Write-Host $banner -ForegroundColor Yellow
 Write-Host ("Report: {0}" -f $mdPath) -ForegroundColor Green
 Write-Host "This maps Microsoft's assessment structure to your live config, plus the extra findings from analyze.ps1." -ForegroundColor Green
