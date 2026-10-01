@@ -211,8 +211,9 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-solutions.json')) {
 # --- Dataverse: who holds System Administrator, per environment ---
 # dv-<env>-users.json = enabled users with their DIRECTLY assigned roles; a role inherited
 # through a team is not visible here, and the findings say so. Left out: built-in accounts
-# (SYSTEM, INTEGRATION, support users) and Microsoft-owned application users (first-party '#'
-# names, or an app whose service principal is owned by a Microsoft tenant, such as dual-write).
+# (SYSTEM, INTEGRATION, support users) and Microsoft-owned application users, identified by the
+# owner tenant of the app's service principal (dual-write, first-party apps). The '#' in front
+# of an application user's name is NOT a Microsoft marker: Dataverse adds it to every app user.
 # More than 3 people is MEDIUM in Production and LOW elsewhere (makers often hold it in dev).
 $msTenants = @('f8cdef31-a31e-4b4a-93e4-5f571e91255a', '72f988bf-86f1-41af-91ab-2d7cd011db47')
 $appOwner = $null
@@ -222,7 +223,7 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-users.json')) {
     $users = Load $f.Name
     if ($null -eq $users) { continue }
     $sa = @($users | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 })
-    $real = @($sa | Where-Object { "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.fullname)" -notlike '#*' -and "$($_.accessmode)" -ne '3' })
+    $real = @($sa | Where-Object { "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.accessmode)" -ne '3' })
     $people = @($real | Where-Object { -not $_.applicationid })
     $appUsers = @($real | Where-Object { $_.applicationid })
     if ($appUsers.Count -and $null -eq $appOwner) {
@@ -239,7 +240,7 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-users.json')) {
         Add-Finding $sev 'D365 admins' "[$envName$(if($sku){" ($sku)"})] $($people.Count) user(s) directly assigned System Administrator (roles inherited through teams not counted): $((@($names) | Select-Object -First 12) -join ', ')$(if($names.Count -gt 12){" (+$($names.Count - 12) more)"}). Keep it to a handful; give everyone else a scoped role." 'dataverse'
     }
     if ($appUsers.Count) {
-        Add-Finding 'MEDIUM' 'Service identities' "[$envName] $($appUsers.Count) non-Microsoft application user(s) directly assigned System Administrator: $((@($appUsers | ForEach-Object { "$($_.fullname)" }) | Select-Object -Unique) -join ', '). Service identities should get a scoped role, not full control of the environment." 'dataverse'
+        Add-Finding 'MEDIUM' 'Service identities' "[$envName] $($appUsers.Count) non-Microsoft application user(s) directly assigned System Administrator: $((@($appUsers | ForEach-Object { "$($_.fullname)" }) | Select-Object -Unique) -join ', '). Service identities should get a scoped role, not full control of the environment.$(if($appOwner.Count -eq 0){' Service principal owners were not read, so Microsoft-owned apps could not be filtered out.'})" 'dataverse'
     }
 }
 if ($dormantSet.Count -and $dvSysAdmins.Count) {

@@ -208,7 +208,7 @@ foreach ($f in @(LFiles 'dv-*-users.json')) {
     if ($null -eq $u) { continue }
     $usersReadN++
     $envName = $f.BaseName -replace '^dv-' -replace '-users$'
-    $sa = @($u | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 -and "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.fullname)" -notlike '#*' -and "$($_.accessmode)" -ne '3' })
+    $sa = @($u | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 -and "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.accessmode)" -ne '3' })
     $pN = @($sa | Where-Object { -not $_.applicationid }).Count
     $aN = @($sa | Where-Object { $_.applicationid -and $msTenants -notcontains $appOwner["$($_.applicationid)".ToLower()] }).Count
     $saPeople += $pN; $saApps += $aN
