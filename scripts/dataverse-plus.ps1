@@ -13,7 +13,9 @@
 #
 # $select column names are verified against the Dataverse table references
 # (organization, emailserverprofile). One invalid column 400s the whole query and the
-# *-ERROR.json keeps the OData message that names it - 403 means no Application User.
+# *-ERROR.json keeps the OData message that names it. A 403 names the missing privilege, or
+# means no Application User. The queries live in _common.ps1 ($DvReads), shared with the setup
+# check that probes each one before the sweep runs.
 
 . (Join-Path $PSScriptRoot '_common.ps1')
 
@@ -67,7 +69,7 @@ foreach ($url in $envs) {
 
             # --- Org security settings (broader) ---------------------------------
             try {
-                $org = Invoke-Paged "${base}organizations?`$select=name,isauditenabled,isuseraccessauditenabled,isreadauditenabled,auditretentionperiodv2,plugintracelogsetting" $H
+                $org = Invoke-Paged "$base$($script:DvReads.orgplus.Path)" $H
                 Save-Json $org "dvplus-$safe-org-settings.json" | Out-Null
                 $o = @($org)[0]
                 if ($o) { $sumAudit = $o.isauditenabled }
@@ -81,7 +83,7 @@ foreach ($url in $envs) {
             try {
                 # servertype + statecode are the documented columns (there is no 'type' column,
                 # which is what 400'd this query before). Annotations add the display labels.
-                $profiles = Invoke-Paged "${base}emailserverprofiles?`$select=name,servertype,statecode" $Hc
+                $profiles = Invoke-Paged "$base$($script:DvReads.emailprofiles.Path)" $Hc
                 Save-Json $profiles "dvplus-$safe-emailprofiles.json" | Out-Null
                 $sumProfiles = @($profiles).Count
             } catch {
@@ -92,7 +94,7 @@ foreach ($url in $envs) {
 
             # --- Queues (count + small sample) -----------------------------------
             try {
-                $r = Invoke-RestMethod -Uri "${base}queues?`$select=name&`$top=5&`$count=true" -Headers $Hc
+                $r = Invoke-RestMethod -Uri "$base$($script:DvReads.queues.Path)" -Headers $Hc
                 $cnt = $r.'@odata.count'
                 Save-Json ([ordered]@{ '@odata.count' = $cnt; sample = @($r.value) }) "dvplus-$safe-queues.json" | Out-Null
                 if ($null -ne $cnt) { $sumQueues = $cnt } else { $sumQueues = @($r.value).Count }
@@ -104,7 +106,7 @@ foreach ($url in $envs) {
 
             # --- Mailboxes (count + small sample) --------------------------------
             try {
-                $r = Invoke-RestMethod -Uri "${base}mailboxes?`$select=name,statecode&`$top=5&`$count=true" -Headers $Hc
+                $r = Invoke-RestMethod -Uri "$base$($script:DvReads.mailboxes.Path)" -Headers $Hc
                 $cnt = $r.'@odata.count'
                 Save-Json ([ordered]@{ '@odata.count' = $cnt; sample = @($r.value) }) "dvplus-$safe-mailboxes.json" | Out-Null
                 if ($null -ne $cnt) { $sumMailbox = $cnt } else { $sumMailbox = @($r.value).Count }
@@ -116,7 +118,7 @@ foreach ($url in $envs) {
 
             # --- Field permissions (field-level security in use) -----------------
             try {
-                $fp = Invoke-Paged "${base}fieldpermissions?`$select=attributelogicalname,fieldsecurityprofileid" $H
+                $fp = Invoke-Paged "$base$($script:DvReads.fieldperms.Path)" $H
                 Save-Json $fp "dvplus-$safe-fieldpermissions.json" | Out-Null
                 $sumFieldPrm = @($fp).Count
             } catch {

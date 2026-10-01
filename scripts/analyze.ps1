@@ -189,23 +189,22 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-entities.json')) {
 }
 
 # --- Dataverse: unmanaged solutions in Production environments ---
-# The environment type comes from the Power Platform inventory, matched on the first label of
-# the instance URL (the same name the Dataverse sweep uses for its files).
-$skuByHost = @{}
-$ppEnvA = Load 'pp-environments.json'
-foreach ($e in @($ppEnvA)) {
-    if (-not $e -or -not $e.properties -or -not $e.properties.linkedEnvironmentMetadata) { continue }
-    $iu = "$($e.properties.linkedEnvironmentMetadata.instanceUrl)"
-    if (-not $iu) { continue }
-    try { $skuByHost[([Uri]$iu).Host.Split('.')[0].ToLower()] = "$($e.properties.environmentSku)" } catch {}
-}
+# The environment type comes from the Power Platform inventory or, without it, from the
+# environment itself (dv-<env>-orginfo.json); matched on the first label of the instance URL
+# (the same name the Dataverse sweeps use for their files). A type that was not read at all is
+# said out loud, never treated as non-production.
+$skuByHost = (Get-EnvSkuMap $out).sku
 foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-solutions.json')) {
     $envName = $f.BaseName -replace '^dv-' -replace '-solutions$'
-    if ($skuByHost["$envName".ToLower()] -ne 'Production') { continue }
+    $sku = $skuByHost["$envName".ToLower()]
+    if ($sku -and $sku -ne 'Production') { continue }
     $sols = Load $f.Name
     if ($null -eq $sols) { continue }
     $um = @($sols | Where-Object { $_ -and $_.ismanaged -eq $false -and $_.isvisible -eq $true -and "$($_.uniquename)" -notin 'Default', 'Active', 'Basic' -and "$($_.friendlyname)" -ne 'Common Data Services Default Solution' })
-    if ($um.Count) { Add-Finding 'MEDIUM' 'Solutions' "[$envName] $($um.Count) unmanaged solution(s) in a Production environment: $((@($um | ForEach-Object { "$($_.friendlyname)" }) | Select-Object -First 10) -join ', '). Production should only receive managed solutions through a pipeline." 'dataverse' }
+    if (-not $um.Count) { continue }
+    $umNames = (@($um | ForEach-Object { "$($_.friendlyname)" }) | Select-Object -First 10) -join ', '
+    if ($sku) { Add-Finding 'MEDIUM' 'Solutions' "[$envName] $($um.Count) unmanaged solution(s) in a Production environment: $umNames. Production should only receive managed solutions through a pipeline." 'dataverse' }
+    else { Add-Finding 'LOW' 'Solutions' "[$envName] $($um.Count) unmanaged solution(s): $umNames. The environment type was not read; if this is Production it is MEDIUM (Production should only receive managed solutions through a pipeline)." 'dataverse' }
 }
 
 # --- Dataverse: who holds System Administrator, per environment ---
@@ -237,7 +236,7 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-users.json')) {
     $sku = $skuByHost["$envName".ToLower()]
     if ($people.Count) {
         $sev = if ($people.Count -gt 3 -and $sku -eq 'Production') { 'MEDIUM' } else { 'LOW' }
-        Add-Finding $sev 'D365 admins' "[$envName$(if($sku){" ($sku)"})] $($people.Count) user(s) directly assigned System Administrator (roles inherited through teams not counted): $((@($names) | Select-Object -First 12) -join ', ')$(if($names.Count -gt 12){" (+$($names.Count - 12) more)"}). Keep it to a handful; give everyone else a scoped role." 'dataverse'
+        Add-Finding $sev 'D365 admins' "[$envName$(if($sku){" ($sku)"}else{' (type not read)'})] $($people.Count) user(s) directly assigned System Administrator (roles inherited through teams not counted): $((@($names) | Select-Object -First 12) -join ', ')$(if($names.Count -gt 12){" (+$($names.Count - 12) more)"}). Keep it to a handful; give everyone else a scoped role.$(if(-not $sku -and $people.Count -gt 3){' MEDIUM if this is a Production environment.'})" 'dataverse'
     }
     if ($appUsers.Count) {
         Add-Finding 'MEDIUM' 'Service identities' "[$envName] $($appUsers.Count) non-Microsoft application user(s) directly assigned System Administrator: $((@($appUsers | ForEach-Object { "$($_.fullname)" }) | Select-Object -Unique) -join ', '). Service identities should get a scoped role, not full control of the environment.$(if($appOwner.Count -eq 0){' Service principal owners were not read, so Microsoft-owned apps could not be filtered out.'})" 'dataverse'

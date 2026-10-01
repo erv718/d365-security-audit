@@ -2,13 +2,13 @@
 # Covers: environments (+ residency/region, security group, Managed Environment flag and
 # Dataverse URL auto-discovery), DLP (connector data) policies, tenant settings.
 #
-# ASSUMPTION: the app registration (CLIENT_ID) must be registered as a Power Platform
-# management application. That is a one-time setup step an admin runs elsewhere - this
-# tool itself never signs in interactively:
+# ASSUMPTION: the app registration (CLIENT_ID) is registered as a Power Platform management
+# application, a step an admin runs elsewhere (this tool never signs in interactively):
 #     Add-PowerAppsAccount ; New-PowerAppManagementApp -ApplicationId <CLIENT_ID>
-# Without that registration the BAP admin endpoints return 401/403 - each area is
-# wrapped in its own try/catch and simply records the error, so a missing registration
-# or license degrades gracefully instead of stopping the sweep.
+# That registration is Microsoft's only route for an app to these endpoints, and it gives the
+# app the rights of a Power Platform Administrator, so it is optional: with environments
+# selected (-Environments, scope.json, .env) the Dataverse checks run without it. Without it
+# the endpoints return 403; each area records its error and the sweep carries on.
 #
 # Everything here is GET (or a read-only listTenantSettings POST). No tenant writes.
 
@@ -20,6 +20,13 @@ $H = @{ Authorization = "Bearer $tok" }
 
 # BAP APIs paginate on 'nextLink' (not the OData '@odata.nextLink').
 $Next = 'nextLink'
+
+# A 403 that says the app has no permission on the path = not registered (optional): one short
+# line instead of the full error body, which is kept in the area's -ERROR.json.
+function Write-PpFailure($area, $e) {
+    if ($e -match '\b403\b' -and $e -match 'does not have permission') { Write-Host "  $area skipped: the app is not registered as a Power Platform management app (optional; see the setup check)." -ForegroundColor Yellow }
+    else { Write-Warning "  $area failed: $e" }
+}
 
 # --- Environments (residency + Dataverse URL auto-discovery) -----------------
 # The payload already carries what the report needs: properties.isDefault, environmentSku,
@@ -46,8 +53,8 @@ try {
     Write-Host "    Managed Environments: $managed; with a security group: $withSg" -ForegroundColor Yellow
 } catch {
     $e = Get-ErrorText $_
-    Write-Warning "  environments failed: $e"
-    Save-Json @{ error = $e; note = 'Register the app as a Power Platform management app: New-PowerAppManagementApp -ApplicationId <CLIENT_ID>.' } 'pp-environments-ERROR.json' | Out-Null
+    Write-PpFailure 'environments' $e
+    Save-Json @{ error = $e; note = 'Optional: New-PowerAppManagementApp -ApplicationId <CLIENT_ID> (Power Platform Administrator rights; remove after the run with Remove-PowerAppManagementApp), or select environments with -Environments.' } 'pp-environments-ERROR.json' | Out-Null
 }
 
 # --- DLP (connector data) policies --------------------------------------------
@@ -75,8 +82,8 @@ try {
     else { Write-Host "  DLP: $($dlp.Count) policies" -ForegroundColor Yellow }
 } catch {
     $e = Get-ErrorText $_
-    Write-Warning "  DLP policies failed: $e"
-    Save-Json @{ error = $e; note = 'Needs the app registered as a Power Platform management app (New-PowerAppManagementApp).' } 'pp-dlp-policies-ERROR.json' | Out-Null
+    Write-PpFailure 'DLP policies' $e
+    Save-Json @{ error = $e; note = 'Needs the app registered as a Power Platform management app (New-PowerAppManagementApp), or check DLP by hand in the Power Platform admin center.' } 'pp-dlp-policies-ERROR.json' | Out-Null
 }
 
 # --- Tenant settings (read-only listTenantSettings POST) ---------------------
@@ -87,7 +94,7 @@ try {
     Write-Host '  saved tenant settings' -ForegroundColor Green
 } catch {
     $e = Get-ErrorText $_
-    Write-Warning "  tenant settings failed: $e"
+    Write-PpFailure 'tenant settings' $e
     Save-Json @{ error = $e } 'pp-tenant-settings-ERROR.json' | Out-Null
 }
 

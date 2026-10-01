@@ -27,13 +27,13 @@ template, so it mirrors 2.4's verdict and is left out of the tally.
 
 | # | Check | Evidence file(s) in `output/` | Produced by | Verdict rule |
 |---|---|---|---|---|
-| 1.1 | Entra integrated with D365 | `pp-environments.json`, `signins-sample.json` | powerplatform-sweep, graph-sweep | Platform fact. Aligned when the environment inventory was read; Not checked otherwise |
-| 1.2 | Roles least privilege | `dv-*-roles.json`, `dv-*-users.json` | dataverse-sweep | More than 3 people holding System Administrator in any environment = Gap; else 0 custom roles = Gap, any = Partial |
+| 1.1 | Entra integrated with D365 | `pp-environments.json`, `signins-sample.json`, `dv-*` | powerplatform-sweep, graph-sweep, dataverse-sweep | Platform fact. Aligned when the environment inventory was read, or for the Dataverse environments the run read (tagged to that scope); Not checked otherwise |
+| 1.2 | Roles least privilege | `dv-*-roles.json`, `dv-*-users.json`, `dv-*-orginfo.json` | dataverse-sweep | More than 3 people holding System Administrator in a Production environment = Gap (type from the inventory, else the environment's own report; an unknown type is named, not guessed); else 0 custom roles = Gap, any = Partial |
 | 1.3 | Security group restricts environment access | `pp-environments.json` (`linkedEnvironmentMetadata.securityGroupId`) | powerplatform-sweep | Counted over eligible environments (has Dataverse; not Default, Developer or Teams). All bound = Aligned; some = Partial; none = Gap |
 | 1.4 | Conditional Access | `ca-policies.json`, `security-defaults.json` | graph-sweep, graph-identity-plus | An enabled policy enforcing MFA = Aligned; none = Gap; security defaults on with no MFA policy = Partial |
 | 1.5 | Intune device management | `intune-compliance-policies.json`, `intune-device-overview.json` | graph-identity-plus | Policies present = Partial; 0 = Gap; Intune not provisioned in the tenant (error 'Request not applicable to target tenant') = Gap |
 | 1.6 | Device compliance enforced for D365 | `intune-compliance-policies.json`, `ca-policies.json` (`compliantDevice` control) | graph-identity-plus, graph-sweep | As 1.5; the evidence adds how many enabled CA policies require a compliant device |
-| 2.1 | Service-to-service app access | `applications.json`, `servicePrincipals.json`, `FINDINGS-summary.json` | graph-sweep, analyze | High-privilege app findings present = Partial; none = Aligned |
+| 2.1 | Service-to-service app access | `applications.json`, `servicePrincipals.json`, `FINDINGS-summary.json` | graph-sweep, analyze | High-privilege app findings present = Partial; none = Aligned. The evidence counts subscriptions and environments read, and a scoped run tags every narrowed plane |
 | 2.2 | App/user access inventory | `applications.json`, `servicePrincipals.json`, `appRoleAssignments-*.json`, `directoryRoles.json`, `guest-count.json` | graph-sweep | Inventory produced = Partial (whether anyone reviews it is a process, not readable) |
 | 2.3 | PIM / segregation of duties | `pim-eligible.json`, `pim-active.json` | graph-identity-plus | Eligible assignments > 0 = Aligned; 0 = Gap (all admin access is standing); no Entra ID P2 (error AadPremiumLicenseRequired) = Gap |
 | 2.4 | Security groups restrict environment access | as 1.3 | powerplatform-sweep | Same evidence and verdict as 1.3 |
@@ -49,7 +49,7 @@ template, so it mirrors 2.4's verdict and is left out of the tally.
 | 4.3 | SIEM / monitoring over Power Platform | `arm-*-sentinel.json`, `arm-*-diagnostic-settings.json`, `arm-*-loganalytics.json` | azure-plus | Sentinel on any workspace = Partial; none = Gap. Evidence adds activity-log export destinations (Event Hub, Log Analytics, storage) and workspace retention |
 | 4.4 | Purview / Sentinel integration | `arm-*-sentinel.json` | azure-plus | Sentinel on = Partial; otherwise Not checked (Purview audit is manual) |
 | 5.1 | Security role design | `dv-*-roles.json` | dataverse-sweep | As 1.2 |
-| 5.2 | Field-level / record / BU security | `dvplus-*-fieldpermissions.json`, `dv-*-fieldsec.json` | dataverse-plus, dataverse-sweep | Any field permission or profile = Partial; 0 = Gap |
+| 5.2 | Field-level / record / BU security | `dvplus-*-fieldpermissions.json`, `dv-*-fieldsec.json` | dataverse-plus, dataverse-sweep | Any field permission, or a field security profile other than the built-in System Administrator one, = Partial; none = Gap. Counted per environment |
 | 5.3 | DLP / IRM / classification | `pp-dlp-policies.json`, `pp-environments.json` | powerplatform-sweep | 0 policies = Gap; default environment covered = Aligned; otherwise Partial |
 | 6.1 | External integration security | `arm-*-logicapps.json` | azure-plus | Inventory produced = Partial |
 | 6.2 | API keys / credentials / tokens | `applications.json` | graph-sweep | An expired credential still present = Gap; else Partial |
@@ -57,12 +57,13 @@ template, so it mirrors 2.4's verdict and is left out of the tally.
 | 7.2 | Vulnerability scanning / pen testing | `arm-*-defender-pricings.json` | azure-plus | Any documented Defender plan on Standard = Partial; else MANUAL |
 | 8.1 | Data sovereignty / residency | `pp-environments.json` (`azureRegion`) | powerplatform-sweep | MANUAL; the regions are listed, adequacy is a legal call |
 
-The Dataverse org files come from two sweeps. `dv-*-org.json` is written by `dataverse-sweep`
-for the environments listed in `DATAVERSE_ENVIRONMENTS`; `dvplus-*-org-settings.json` is
-written by `dataverse-plus` for every environment auto-discovered from the Power Platform
-sweep. The report merges them and counts each environment once. Roles, solutions and per-table
-audit flags come only from `dataverse-sweep`, so 1.2 and 5.1 need `DATAVERSE_ENVIRONMENTS`
-to be set.
+Both Dataverse sweeps cover the same environments: the selection (`-Environments`,
+`scope.json`, `DATAVERSE_ENVIRONMENTS`) or, with none, every environment the Power Platform
+sweep discovered. `dv-*-org.json` and `dvplus-*-org-settings.json` describe the same
+environment; the report merges them into one record per environment (the plus sweep adds
+read-log auditing and plugin tracing). The environment type (Production, Sandbox, ...) comes
+from `pp-environments.json`, or without the admin API from `dv-*-orginfo.json`, the
+environment's own OrganizationType.
 
 ## Beyond the checklist
 

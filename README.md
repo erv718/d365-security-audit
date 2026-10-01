@@ -35,12 +35,13 @@ This tool reads the configuration directly, so the findings are based on the liv
 - Guest accounts: tenant-wide count and concentration by home domain
 - A sign-in sample: legacy/basic-auth protocols that bypass MFA (IMAP, POP, SMTP, Exchange ActiveSync, "other clients"), and MFA that a federated IdP performs but Entra does not record
 
-**Power Platform (admin API)**
+**Power Platform (admin API; optional, see [docs/permissions.md](docs/permissions.md) section 5)**
 - Every environment: type, region, whether it has a Dataverse database, whether a security group restricts access, whether it is a Managed Environment
 - DLP (connector data) policies, and whether the default environment is covered by one
 - Tenant settings (for example default environment routing)
 
 **Data platform (Dataverse, per environment)**
+- The environment's type (Production, Sandbox), read from the environment itself
 - Whether auditing is turned on (org level, user-access auditing, read-log auditing, retention) and per table
 - Security roles, whether any custom roles exist, and who holds System Administrator (people and the organisation's own application users)
 - Solution inventory, and unmanaged solutions sitting in Production environments
@@ -81,8 +82,9 @@ The audit runs entirely on that one read-only credential. **There is no interact
 sign-in of any kind**: the tool never signs in as a person, never opens a browser
 prompt, and never shows a device code. On every run it first checks your app's setup
 and prints the exact fix for anything missing (you can also run the check alone with
-`pwsh ./scripts/check-setup.ps1`). If `.env` is empty, it stops with setup
-instructions instead of falling back to your account.
+`pwsh ./scripts/check-setup.ps1`): a Graph permission without consent, a Dataverse table the
+app's role cannot read, or an API permission the app holds but the audit never uses. If `.env`
+is empty, it stops with setup instructions instead of falling back to your account.
 
 Output lands in `./output` (git-ignored):
 - `*.json` - the raw evidence for each area

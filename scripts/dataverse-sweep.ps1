@@ -1,5 +1,7 @@
 # dataverse-sweep.ps1 - read-only pull of Dataverse security config, per environment.
-# Covers: org-level auditing, per-table audit flags, security roles (managed vs custom), solutions.
+# Covers: org-level auditing, per-table audit flags, security roles (managed vs custom), solutions,
+# field security profiles, enabled users with their roles, and the environment's own type.
+# The queries live in _common.ps1 ($DvReads), shared with the setup check that probes them.
 #
 # Environments: the same resolved list as dataverse-plus.ps1 (run-audit.ps1 -Environments >
 # scope.json > DATAVERSE_ENVIRONMENTS in .env, as URLs, environment ids or display names).
@@ -43,11 +45,15 @@ foreach ($url in $envs) {
     $tok = Get-Token $url
     if (-not $tok) { Write-Warning "  no token for $url"; continue }
     $H = @{ Authorization = "Bearer $tok"; Accept = 'application/json'; 'OData-Version' = '4.0' }
-    Save-DvArea $url $H $safe 'organizations?$select=name,isauditenabled,isuseraccessauditenabled,auditretentionperiodv2' 'org' 'org settings'
-    Save-DvArea $url $H $safe 'EntityDefinitions?$select=LogicalName,IsAuditEnabled,IsCustomEntity' 'entities' 'entity audit flags'
-    Save-DvArea $url $H $safe 'roles?$select=name,ismanaged,iscustomizable,roleid' 'roles' 'security roles'
-    Save-DvArea $url $H $safe 'solutions?$select=uniquename,friendlyname,version,ismanaged,isvisible&$expand=publisherid($select=friendlyname)' 'solutions' 'solutions'
-    Save-DvArea $url $H $safe 'fieldsecurityprofiles?$select=name' 'fieldsec' 'field security profiles'
-    Save-DvArea $url $H $safe 'systemusers?$select=fullname,domainname,isdisabled,accessmode,applicationid,azureactivedirectoryobjectid&$filter=isdisabled eq false&$expand=systemuserroles_association($select=name,roleid)' 'users' 'users and their roles'
+    foreach ($k in 'org', 'entities', 'roles', 'solutions', 'fieldsec', 'users') {
+        $rd = $script:DvReads[$k]
+        Save-DvArea $url $H $safe $rd.Path $rd.File $rd.Label
+    }
+    # The environment's own type (Production, Sandbox, ...), so the Production-only rules are
+    # graded even when the Power Platform admin inventory could not be read.
+    try {
+        $oi = Invoke-RestMethod -Uri "$url/api/data/v9.2/$($script:DvReads.orginfo.Path)" -Headers $H
+        Save-Json $oi.Detail "dv-$safe-orginfo.json" | Out-Null
+    } catch { $why = Get-ErrorText $_; Write-Warning "  [$safe] environment type failed: $why"; Save-Json @{ error = $why } "dv-$safe-orginfo-ERROR.json" | Out-Null }
     Write-Host "  [$safe] done" -ForegroundColor Green
 }

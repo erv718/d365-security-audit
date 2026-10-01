@@ -92,14 +92,16 @@ function ErrNote($i) {
 }
 
 # ---------- pre-load / aggregate ----------
-# Dataverse org settings come from two sweeps: dv-*-org.json (DATAVERSE_ENVIRONMENTS list)
-# and dvplus-*-org-settings.json (auto-discovered environments); one environment can be in both.
+# Dataverse org settings come from both sweeps for the same environments: dv-*-org.json and
+# dvplus-*-org-settings.json (which adds isreadauditenabled and plugintracelogsetting). One
+# record per environment, with the columns of both.
 $orgs = @{}
 foreach ($f in @(LFiles 'dv-*-org.json') + @(LFiles 'dvplus-*-org-settings.json')) {
     $o = First (LJ $f.Name)
     if ($null -eq $o -or -not ($o.PSObject.Properties.Name -contains 'isauditenabled')) { continue }
     $key = if ($o.organizationid) { "$($o.organizationid)" } elseif ($o.name) { "$($o.name)" } else { $f.Name }
-    if (-not $orgs.ContainsKey($key)) { $orgs[$key] = $o }
+    if (-not $orgs.ContainsKey($key)) { $orgs[$key] = $o; continue }
+    foreach ($p in @($o.PSObject.Properties)) { if (-not ($orgs[$key].PSObject.Properties.Name -contains $p.Name)) { $orgs[$key] | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value } }
 }
 $orgList        = @($orgs.Values)
 $envN           = $orgList.Count
@@ -172,8 +174,16 @@ $mailboxFiles = @(LFiles 'dvplus-*-mailboxes.json'); $mailboxN = 0
 foreach ($f in $mailboxFiles) { $m = First (LJ $f.Name); if ($m -and $null -ne $m.'@odata.count') { $mailboxN += [int]$m.'@odata.count' } elseif ($m) { $mailboxN += Cnt $m.sample } }
 $queueFiles = @(LFiles 'dvplus-*-queues.json'); $queueN = 0
 foreach ($f in $queueFiles) { $q = First (LJ $f.Name); if ($q -and $null -ne $q.'@odata.count') { $queueN += [int]$q.'@odata.count' } elseif ($q) { $queueN += Cnt $q.sample } }
-$fpFiles = @(LFiles 'dvplus-*-fieldpermissions.json') + @(LFiles 'dv-*-fieldsec.json'); $fpReadN = 0; $fieldPerms = 0
-foreach ($f in $fpFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $fpReadN++; $fieldPerms += Cnt $x }
+# Column-level security in use = field permissions, or a field security profile other than the
+# built-in 'System Administrator' one that every environment has. Counted per environment.
+$fpFiles = @(LFiles 'dvplus-*-fieldpermissions.json') + @(LFiles 'dv-*-fieldsec.json'); $fpEnvs = @{}; $fieldPerms = 0
+foreach ($f in $fpFiles) {
+    $x = LJ $f.Name
+    if ($null -eq $x) { continue }
+    $fpEnvs[($f.BaseName -replace '^dv(plus)?-' -replace '-(fieldpermissions|fieldsec)$').ToLower()] = 1
+    if ($f.Name -like 'dv-*-fieldsec.json') { $fieldPerms += Cnt ($x | Where-Object { $_ -and "$($_.name)" -ne 'System Administrator' }) } else { $fieldPerms += Cnt $x }
+}
+$fpReadN = $fpEnvs.Count
 
 # Table-level auditing on the key security tables (dv-<env>-entities.json, basic Dataverse sweep).
 $keyTables = @('account', 'contact', 'systemuser', 'role', 'team', 'businessunit', 'fieldsecurityprofile')
@@ -193,16 +203,12 @@ foreach ($f in @(LFiles 'dv-*-entities.json')) {
 
 # Who holds System Administrator (dv-<env>-users.json): people vs the organisation's own
 # application users; built-in and Microsoft first-party '#' accounts excluded.
-$skuByHost = @{}
-foreach ($e in @($ppEnv)) {
-    if (-not $e -or -not $e.properties -or -not $e.properties.linkedEnvironmentMetadata) { continue }
-    $iu = "$($e.properties.linkedEnvironmentMetadata.instanceUrl)"
-    if ($iu) { try { $skuByHost[([Uri]$iu).Host.Split('.')[0].ToLower()] = "$($e.properties.environmentSku)" } catch {} }
-}
+# Environment type: the Power Platform inventory, else the environment's own report (orginfo).
+$skuByHost = (Get-EnvSkuMap $out).sku
 $msTenants = @('f8cdef31-a31e-4b4a-93e4-5f571e91255a', '72f988bf-86f1-41af-91ab-2d7cd011db47')
 $appOwner = @{}
 foreach ($sp in @($sps)) { if ($sp -and $sp.appId) { $appOwner["$($sp.appId)".ToLower()] = "$($sp.appOwnerOrganizationId)".ToLower() } }
-$usersReadN = 0; $saPeople = 0; $saApps = 0; $saBusy = @(); $saReview = @()
+$usersReadN = 0; $saPeople = 0; $saApps = 0; $saBusy = @(); $saReview = @(); $saUnknown = @()
 foreach ($f in @(LFiles 'dv-*-users.json')) {
     $u = LJ $f.Name
     if ($null -eq $u) { continue }
@@ -212,10 +218,13 @@ foreach ($f in @(LFiles 'dv-*-users.json')) {
     $pN = @($sa | Where-Object { -not $_.applicationid }).Count
     $aN = @($sa | Where-Object { $_.applicationid -and $msTenants -notcontains $appOwner["$($_.applicationid)".ToLower()] }).Count
     $saPeople += $pN; $saApps += $aN
-    if ($pN -gt 3) { if ($skuByHost[$envName.ToLower()] -eq 'Production') { $saBusy += "$envName ($pN)" } else { $saReview += "$envName ($pN)" } }
+    if ($pN -gt 3) {
+        $sk = $skuByHost[$envName.ToLower()]
+        if ($sk -eq 'Production') { $saBusy += "$envName ($pN)" } elseif ($sk) { $saReview += "$envName ($pN)" } else { $saUnknown += "$envName ($pN)" }
+    }
 }
 $saNote = ''
-if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people, $saApps to non-Microsoft application users$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})." }
+if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people, $saApps to non-Microsoft application users$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})$(if($saUnknown.Count){"; more than 3 people where the environment type was not read (a Gap if Production): $($saUnknown -join ', ')"})." }
 else {
     $uErr = @(LFiles 'dv-*-users-ERROR.json')
     if ($uErr.Count) { $saNote = " System Administrator holders not read.$(ErrNote (ErrInfo ($uErr[0].Name -replace '-ERROR\.json$', '.json'))) Give the app user Read (Organization) on User and Security Role." }
@@ -338,11 +347,15 @@ function Chk($no,$dom,$check,$status,$ev,$plane = 'tenant') {
 if (Have $ppEnv) {
     $s11 = 'Aligned'
     $e11 = "Platform fact, not a tenant setting: Dataverse/D365 online authenticate only through Entra ID. Verified: $($envDv.Count) Dataverse environment(s) inventoried from the Power Platform admin API$(if($d365SignIns){"; $d365SignIns of $signinN sampled sign-ins targeted Dataverse/Dynamics resources through Entra"}). Not verified: whether a federated IdP performs MFA that Entra never records (see the sign-in sample)."
+} elseif ($envN -gt 0 -or $usersReadN -gt 0 -or $rolesEnvN -gt 0) {
+    $s11 = 'Aligned'; $p11 = 'dataverse'
+    $e11 = "Platform fact, not a tenant setting: Dataverse/D365 online authenticate only through Entra ID. Verified for the $([Math]::Max($envN, [Math]::Max($usersReadN, $rolesEnvN))) Dataverse environment(s) this run read: the audit signed in to them with an Entra ID app-only token. The environment inventory was not read (Power Platform admin API), so other environments were not listed."
 } else {
     $s11 = 'Not checked'
     $e11 = 'Platform fact: D365 online authenticates only through Entra ID, but no environment inventory was read (Power Platform admin API not reachable), so nothing tenant-specific was verified.'
 }
-Chk '1.1' '1 Entra ID' 'Entra integrated with D365' $s11 $e11
+if (-not $p11) { $p11 = 'tenant' }
+Chk '1.1' '1 Entra ID' 'Entra integrated with D365' $s11 $e11 $p11
 
 if ($rolesEnvN -eq 0 -and $usersReadN -eq 0) { $s12 = 'Not checked'; $e12 = 'Security roles and role holders not read: set DATAVERSE_ENVIRONMENTS in .env (or let the Power Platform sweep discover the environments) so the basic Dataverse sweep pulls them, and give the app user Read on Security Role and User.' }
 else {
@@ -394,9 +407,9 @@ else {
     if ($rbacReadN -eq 0) { $notRead21 += 'Azure role assignments' }
     if ($usersReadN -eq 0) { $notRead21 += 'Dataverse role holders' }
     if ($riskyN -gt 0 -or $svcFindings -gt 0 -or $notRead21.Count) { $s21 = 'Partial' } else { $s21 = 'Aligned' }
-    $e21 = "$(Cnt $apps) app registrations$(if(Have $sps){" and $(Cnt $sps) service principals"}) inventoried; $riskyN high-privilege tenant-wide permission(s) and $svcFindings service-identity finding(s) (service principals owning subscriptions, application users with System Administrator) in the findings. Not verified: that each integration runs under its own least-privilege identity.$(if($notRead21.Count){" Not read: $($notRead21 -join ', ')."})"
+    $e21 = "$(Cnt $apps) app registrations$(if(Have $sps){" and $(Cnt $sps) service principals"}) inventoried; $riskyN high-privilege tenant-wide permission(s) and $svcFindings service-identity finding(s) (service principals owning subscriptions in $rbacReadN subscription(s) read, application users with System Administrator in $usersReadN environment(s) read) in the findings. Not verified: that each integration runs under its own least-privilege identity.$(if($notRead21.Count){" Not read: $($notRead21 -join ', ')."})"
 }
-Chk '2.1' '2 Authentication' 'Service-to-service app access' $s21 $e21
+Chk '2.1' '2 Authentication' 'Service-to-service app access' $s21 $e21 'mixed'
 
 if ((Have $apps) -and (Have $sps)) {
     $s22 = 'Partial'
@@ -472,8 +485,8 @@ else { $s51 = 'Partial'; $e51 = "$customRoles custom role(s) in $rolesEnvN envir
 $e51 += $saNote
 Chk '5.1' '5 Security settings' 'Security role design' $s51 $e51 'dataverse'
 if ($fpReadN -eq 0) { $s52 = 'Not checked'; $e52 = 'Field security profiles/permissions not read (no environment reachable as an Application User).' }
-elseif ($fieldPerms -gt 0) { $s52 = 'Partial'; $e52 = "$fieldPerms field-security permission(s)/profile(s) across $($fpReadN) file(s); business-unit and record-level design to review." }
-else { $s52 = 'Gap'; $e52 = "0 field-security permissions/profiles in $($fpReadN) environment(s) read - no column-level security in use." }
+elseif ($fieldPerms -gt 0) { $s52 = 'Partial'; $e52 = "$fieldPerms field permission(s) or custom field security profile(s) in $($fpReadN) environment(s) read; business-unit and record-level design to review." }
+else { $s52 = 'Gap'; $e52 = "No field permissions and no field security profile beyond the built-in System Administrator one in $($fpReadN) environment(s) read - no column-level security in use." }
 Chk '5.2' '5 Security settings' 'Field-level / record / BU security' $s52 $e52 'dataverse'
 $dlpN = Cnt $dlp
 if (-not (Have $dlp)) { $s53 = 'Not checked'; $e53 = 'DLP policies not read (needs the app registered as a Power Platform management app: New-PowerAppManagementApp).' }

@@ -102,11 +102,12 @@ application permissions and grant admin consent, give it Reader on the free subs
 it as an Application User with a read-only role in each Dataverse environment (manually per
 permissions.md, or automated: `testdata/add-dataverse-app-user.ps1 -ClientId <your CLIENT_ID>`,
 plan first then `-Force`), and register it
-as a Power Platform management application with `New-PowerAppManagementApp`. Run that last
-step from Windows PowerShell 5.1; the module uses .NET Framework and does not load in
-PowerShell 7. Put `TENANT_ID`, `CLIENT_ID` and `CLIENT_SECRET` in `.env`, list the Trial and
-Developer environment URLs in `DATAVERSE_ENVIRONMENTS`, and run `pwsh ./scripts/check-setup.ps1`
-until every line reads `[OK]`.
+as a Power Platform management application with `New-PowerAppManagementApp` (fine in a
+throwaway tenant; on a real tenant read permissions.md section 5 first, because it gives the
+app admin rights). Run that last step from Windows PowerShell 5.1; the module uses .NET
+Framework and does not load in PowerShell 7. Put `TENANT_ID`, `CLIENT_ID` and `CLIENT_SECRET`
+in `.env`, list the Trial and Developer environment URLs in `DATAVERSE_ENVIRONMENTS`, and run
+`pwsh ./scripts/check-setup.ps1` until every line reads `[OK]` (or `[ !]`, an optional note).
 
 ## 6. Plant fixtures so every finding type fires
 

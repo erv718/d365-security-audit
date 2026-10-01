@@ -1,8 +1,9 @@
 # Permissions
 
-All read-only. The tool never writes to your tenant, and it authenticates ONLY as a
-read-only app registration that you create. There is no interactive sign-in, no device
-code, and no CLI fallback - by design.
+The tool never writes to your tenant, and it authenticates ONLY as a read-only app
+registration that you create. There is no interactive sign-in, no device code, and no CLI
+fallback - by design. Sections 1 to 4 grant read access only. Section 5 is optional and is the
+one exception: read it before you do it.
 
 Every run starts with a setup check that probes each item below and prints the exact fix
 for anything missing. You can also run it alone: `pwsh ./scripts/check-setup.ps1`
@@ -57,6 +58,10 @@ for Conditional Access, named locations and security defaults; `RoleManagement.R
 for directory roles and their members), so the list above is already the practical minimum.
 The alternatives are listed for admins who audit what each individual call needs.
 
+**Nothing more.** The setup check lists every application permission the app holds and names
+any the audit never uses (for example `Mail.Read`). Take those away: on the API permissions
+page, on each such row, **...** > **Revoke admin consent**, then **...** > **Remove permission**.
+
 ## 3. Azure subscriptions (ARM)
 
 The app needs the **Reader** role on each subscription you want audited.
@@ -74,17 +79,39 @@ The app must exist inside each environment as an **Application User** with a rea
 security role.
 
 1. Go to **admin.powerplatform.microsoft.com** > **Environments** > click an environment.
-2. **Settings** > **Users + permissions** > **Application users**.
-3. **+ New app user** > **Add an app** > pick your app > **Add**.
-4. **Business unit**: pick the default one it offers.
-5. Under **Security roles**, add a read-only role, then **Create**.
-6. Repeat for every environment listed in `DATAVERSE_ENVIRONMENTS`.
+2. **Settings** > **Users + permissions** > **Security roles** > **+ New role**. Name it (for
+   example `SecAudit - Read Only`) and keep the default business unit. Turn off **Include App
+   Opener privileges for running Model-Driven apps**: it copies in the privileges for opening
+   apps, which the audit never does. **Save**.
+3. In the new role, set **Read** to **Organization** on each table below and nothing else (no
+   Create, Write, Delete, Append, Append To, Assign or Share). Find each one with the role
+   editor's search box. **Save**.
+4. **Settings** > **Users + permissions** > **Application users** > **+ New app user** >
+   **Add an app** > pick your app > **Add**. **Business unit**: the default one it offers.
+   **Security roles**: only the role from step 2. **Create**.
+5. Repeat in every environment you audit. Roles are per environment, so create the role in
+   each one too.
 
-About the role: a custom role with Read at Organization scope on Solution, Security Role,
-User, and Field Security Profile, plus Entity/Attribute read, is enough. Read on User and
-Security Role is what lets the tool list who holds System Administrator; without it that pull
-fails on its own and the rest of the audit still runs. `System Customizer`
-works as a quick alternative but grants more than read - prefer the custom read-only role.
+| Table (as the role editor names it) | Why the audit reads it |
+|---|---|
+| Organization | audit settings and audit-log retention (3.4, 4.1, 4.2) |
+| Security Role | custom vs built-in roles, and the role each user holds (1.2, 5.1) |
+| User | who holds System Administrator, people and application users (1.2, 5.1) |
+| Solution | unmanaged solutions in Production |
+| Publisher | the solution read includes each solution's publisher, and Dataverse rejects the whole solution read without it |
+| Field Security Profile | column-level security in use (5.2) |
+| Email Server Profile | server-side sync profiles (3.5) |
+| Mailbox | mailbox records (3.6) |
+| Queue | queues (3.6) |
+
+Team and Business Unit are not needed (harmless if already ticked).
+
+You do not have to get this right by hand: on every run the setup check reads one row through
+each of the audit's Dataverse queries and names any table the role is still missing (it also
+shows the role the app user holds and the environment type, Production or Sandbox). If it
+names a table that is not in the list above, add Read (Organization) on that one the same way.
+Never give the app user `System Administrator` or `System Customizer`: both can change the
+environment, and the setup check flags them.
 
 **Automated alternative:** `testdata/add-dataverse-app-user.ps1 -ClientId <your CLIENT_ID>`
 discovers every Dataverse environment in the tenant and does the same two changes (app
@@ -92,15 +119,36 @@ user + role binding) over REST, with a plan table first and `-Force` to apply. I
 to sign in as a tenant admin once per plane (device code). Review the script first; it
 writes exactly those records and nothing else.
 
-## 5. Power Platform admin API (environments, DLP, tenant settings)
+## 5. Power Platform admin API (optional: environment list, DLP, tenant settings)
 
-Register the app as a Power Platform management application. One time, signed in as a
-Power Platform admin:
+This is the one step that is **not read-only**, so it is optional.
+
+Microsoft offers exactly one way for an app to read the environment list, DLP (connector data)
+policies and tenant settings: registering it as a Power Platform management application. A
+registered app is treated like a user holding the Power Platform Administrator role, and
+Microsoft states that granular roles "can't be assigned to limit their capabilities". The
+newer read-only "Power Platform reader" role (preview) does not cover listing environments, so
+it is no alternative yet. The audit itself still only reads; the point is what the credential
+could do while the registration exists.
+
+Choose one:
+
+- **Skip it.** Name the environments yourself, for example
+  `./run-audit.ps1 -Environments https://<org>.crm.dynamics.com` (or `scope.json`, or
+  `DATAVERSE_ENVIRONMENTS`). Every Dataverse check runs, and each environment reports its own
+  type (Production or Sandbox). Checks 1.3 and 2.4 (environment security groups) and 5.3 (DLP)
+  read Not checked: confirm those by hand in the Power Platform admin center.
+- **Register it for the run only.** Register right before the run, remove it right after, and
+  delete the client secret when you are done (see "After you run it").
+
+Signed in as a Power Platform admin:
 
 ```powershell
 Install-Module Microsoft.PowerApps.Administration.PowerShell -Scope CurrentUser
 Add-PowerAppsAccount
 New-PowerAppManagementApp -ApplicationId <your CLIENT_ID>
+# ...run the audit, then:
+Remove-PowerAppManagementApp -ApplicationId <your CLIENT_ID>
 ```
 
 **Run this from Windows PowerShell 5.1** (the `powershell.exe` that ships with Windows). The
@@ -125,8 +173,10 @@ or DLP pull ever returns 401 while the registration above is in place, this is t
 
 ## After you run it
 
-**Rotate the client secret** when the audit is done, and delete the app if it was
-one-time. Treat `output/` as sensitive - it contains your real tenant configuration.
+- If you registered the management app (section 5), remove it:
+  `Remove-PowerAppManagementApp -ApplicationId <your CLIENT_ID>`.
+- **Delete or rotate the client secret** when the audit is done, and delete the app if it was
+  one-time. Treat `output/` as sensitive - it contains your real tenant configuration.
 
 ## Before you run it
 

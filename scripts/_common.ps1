@@ -390,7 +390,8 @@ function Get-ScopeDataverseText($scope) {
     if ($sel.Count -eq 0) { return 'all discovered environments' }
     $res = @(Get-ScopeItems $pp.resolved); $unr = @(Get-ScopeItems $pp.unresolved)
     $text = "$($sel.Count) selected environment(s)"
-    if ($null -ne $pp.discoveredEnvironments) { $text = "$($res.Count) of $($pp.discoveredEnvironments) environment(s)" }
+    # 'n of m' only when environments were discovered; 0 means the catalog could not be read.
+    if ($null -ne $pp.discoveredEnvironments -and [int]$pp.discoveredEnvironments -gt 0) { $text = "$($res.Count) of $($pp.discoveredEnvironments) environment(s)" }
     if ($unr.Count -gt 0) { $text += " ($($unr.Count) not resolved: $($unr -join ', '))" }
     return $text
 }
@@ -410,6 +411,103 @@ function Get-ScopeTag($scope, [string]$plane) {
     switch ($plane) {
         'azure'     { if (Test-ScopeAzureSelected $scope) { return "scoped: $(Get-ScopeAzureText $scope)" }; return 'all visible subscriptions' }
         'dataverse' { if (@(Get-ScopeItems $scope.powerPlatform.environments).Count -gt 0) { return "scoped: $(Get-ScopeDataverseText $scope)" }; return 'all discovered environments' }
+        # A row built from several planes (Graph, Azure, Dataverse) names every narrowed one.
+        'mixed'     {
+            $parts = @()
+            if (Test-ScopeAzureSelected $scope) { $parts += "Azure $(Get-ScopeAzureText $scope)" }
+            if (@(Get-ScopeItems $scope.powerPlatform.environments).Count -gt 0) { $parts += "Dataverse $(Get-ScopeDataverseText $scope)" }
+            if ($parts.Count) { return "scoped: $($parts -join '; '); identity tenant-wide" }
+            return 'tenant-wide'
+        }
         default     { return 'tenant-wide' }
     }
+}
+
+# ---------------------------------------------------------------------------------------------
+# Dataverse reads: every query the two Dataverse sweeps send, in one place, so the setup check
+# probes exactly what the sweeps will ask for. Tables = the security-role rows that need Read
+# (Organization level). A query that $expands into a second table needs Read on both, or
+# Dataverse rejects the whole query (solutions -> Publisher, users -> Security Role).
+# Probe = the same read cut to one row, set only where appending $top=1 would not work.
+# ---------------------------------------------------------------------------------------------
+$script:DvReads = [ordered]@{
+    org           = @{ File = 'org';              Label = 'org settings';            Tables = 'Organization';           Path = 'organizations?$select=name,isauditenabled,isuseraccessauditenabled,auditretentionperiodv2' }
+    orginfo       = @{ File = 'orginfo';          Label = 'environment type';        Tables = '';                       Path = "RetrieveCurrentOrganization(AccessType=@p1)?@p1=Microsoft.Dynamics.CRM.EndpointAccessType'Default'"; Probe = "RetrieveCurrentOrganization(AccessType=@p1)?@p1=Microsoft.Dynamics.CRM.EndpointAccessType'Default'" }
+    entities      = @{ File = 'entities';         Label = 'table audit flags';       Tables = '';                       Path = 'EntityDefinitions?$select=LogicalName,IsAuditEnabled,IsCustomEntity'; Probe = "EntityDefinitions(LogicalName='account')?`$select=LogicalName,IsAuditEnabled,IsCustomEntity" }
+    roles         = @{ File = 'roles';            Label = 'security roles';          Tables = 'Security Role';          Path = 'roles?$select=name,ismanaged,iscustomizable,roleid' }
+    solutions     = @{ File = 'solutions';        Label = 'solutions';               Tables = 'Solution, Publisher';    Path = 'solutions?$select=uniquename,friendlyname,version,ismanaged,isvisible&$expand=publisherid($select=friendlyname)' }
+    fieldsec      = @{ File = 'fieldsec';         Label = 'field security profiles'; Tables = 'Field Security Profile'; Path = 'fieldsecurityprofiles?$select=name' }
+    users         = @{ File = 'users';            Label = 'users and their roles';   Tables = 'User, Security Role';    Path = 'systemusers?$select=fullname,domainname,isdisabled,accessmode,applicationid,azureactivedirectoryobjectid&$filter=isdisabled eq false&$expand=systemuserroles_association($select=name,roleid)' }
+    orgplus       = @{ File = 'org-settings';     Label = 'org security settings';   Tables = 'Organization';           Path = 'organizations?$select=name,isauditenabled,isuseraccessauditenabled,isreadauditenabled,auditretentionperiodv2,plugintracelogsetting' }
+    emailprofiles = @{ File = 'emailprofiles';    Label = 'email server profiles';   Tables = 'Email Server Profile';   Path = 'emailserverprofiles?$select=name,servertype,statecode' }
+    queues        = @{ File = 'queues';           Label = 'queues';                  Tables = 'Queue';                  Path = 'queues?$select=name&$top=5&$count=true' }
+    mailboxes     = @{ File = 'mailboxes';        Label = 'mailboxes';               Tables = 'Mailbox';                Path = 'mailboxes?$select=name,statecode&$top=5&$count=true' }
+    fieldperms    = @{ File = 'fieldpermissions'; Label = 'field permissions';       Tables = 'Field Security Profile'; Path = 'fieldpermissions?$select=attributelogicalname,fieldsecurityprofileid' }
+}
+function Get-DvProbePath($read) {
+    if ($read.Probe) { return $read.Probe }
+    if ($read.Path -match '\$top=') { return $read.Path }
+    $sep = if ($read.Path.Contains('?')) { '&' } else { '?' }
+    return "$($read.Path)$sep`$top=1"
+}
+
+# Dataverse names a missing privilege in its 403 body ("... is missing prvReadPublisher privilege
+# (Id=...) on OTC=7101 for entity 'publisher'"). Returns the table as the role editor shows it,
+# or $null when the error is not a missing privilege.
+$script:DvPrivTables = @{
+    prvReadOrganization = 'Organization'; prvReadSolution = 'Solution'; prvReadPublisher = 'Publisher'
+    prvReadRole = 'Security Role'; prvReadUser = 'User'; prvReadFieldSecurityProfile = 'Field Security Profile'
+    prvReadFieldPermission = 'Field Permission'; prvReadEmailServerProfile = 'Email Server Profile'
+    prvReadMailbox = 'Mailbox'; prvReadQueue = 'Queue'; prvReadEntity = 'Entity'; prvReadAttribute = 'Attribute'
+    prvReadTeam = 'Team'; prvReadBusinessUnit = 'Business Unit'
+}
+function Get-DvMissingTable([string]$ErrorText) {
+    if ($ErrorText -notmatch 'missing (prv\w+) privilege') { return $null }
+    $priv = $Matches[1]
+    if ($script:DvPrivTables.ContainsKey($priv)) { return $script:DvPrivTables[$priv] }
+    if ($ErrorText -match "for entity '([^']+)'") { return "$($Matches[1]) ($priv)" }
+    return $priv
+}
+
+# Environment type (Production, Sandbox, ...). The Power Platform admin inventory has it; without
+# that registration each Dataverse environment reports its own (RetrieveCurrentOrganization >
+# OrganizationType, saved as dv-<env>-orginfo.json). Microsoft's enum: Customer = the primary
+# organization and Secondary = production instances; CustomerTest and CustomerFreeTest = sandbox.
+function ConvertTo-EnvSku($orgType) {
+    switch ("$orgType") {
+        { $_ -in 'Customer', 'Secondary', '0', '4' }                   { return 'Production' }
+        { $_ -in 'CustomerTest', 'CustomerFreeTest', '5', '6' }        { return 'Sandbox' }
+        { $_ -in 'Default', '12' }                                      { return 'Default' }
+        { $_ -in 'Developer', '13' }                                    { return 'Developer' }
+        { $_ -in 'Trial', 'TestDrive', 'EmailTrial', '9', '11', '14' } { return 'Trial' }
+        { $_ -in 'Teams', '15' }                                        { return 'Teams' }
+    }
+    return $null
+}
+# Type per environment, keyed by the first label of its URL (the name in the dv-<env>-* files):
+# @{ sku = @{ env = type }; source = @{ env = 'Power Platform admin API' or 'Dataverse' } }.
+# The admin inventory wins; the environment's own report fills in the rest.
+function Get-EnvSkuMap([string]$OutDir) {
+    $sku = @{}; $src = @{}
+    $p = Join-Path $OutDir 'pp-environments.json'
+    if (Test-Path $p) {
+        try {
+            $all = Get-Content $p -Raw | ConvertFrom-Json
+            foreach ($e in @($all)) {
+                if (-not $e -or -not $e.properties -or -not $e.properties.linkedEnvironmentMetadata) { continue }
+                $iu = "$($e.properties.linkedEnvironmentMetadata.instanceUrl)"; $t = "$($e.properties.environmentSku)"
+                if (-not $iu -or -not $t) { continue }
+                try { $k = ([Uri]$iu).Host.Split('.')[0].ToLower(); $sku[$k] = $t; $src[$k] = 'Power Platform admin API' } catch {}
+            }
+        } catch { Write-Warning "pp-environments.json could not be read for environment types ($($_.Exception.Message))" }
+    }
+    foreach ($f in @(Get-ChildItem $OutDir -Filter 'dv-*-orginfo.json' -ErrorAction SilentlyContinue)) {
+        $k = ($f.BaseName -replace '^dv-' -replace '-orginfo$').ToLower()
+        if ($sku.ContainsKey($k)) { continue }
+        try {
+            $t = ConvertTo-EnvSku (Get-Content $f.FullName -Raw | ConvertFrom-Json).OrganizationType
+            if ($t) { $sku[$k] = $t; $src[$k] = 'Dataverse' }
+        } catch {}
+    }
+    return @{ sku = $sku; source = $src }
 }

@@ -8,6 +8,8 @@
 # anyway). Nothing is changed. Outputs $true when the audit can proceed (even partially -
 # sweeps fail soft), or $false when it cannot start at all (no .env values, the app cannot
 # sign in, an unreadable scope file, or -StrictScope with an invisible selection).
+# [OK] = ready, [ X] = needs a fix (the audit still runs and skips what it cannot read),
+# [ !] = optional or least-privilege note (never counted as a failure).
 # Can also be run on its own:  pwsh ./scripts/check-setup.ps1
 
 . (Join-Path $PSScriptRoot '_common.ps1')
@@ -21,6 +23,13 @@ function Show {
         foreach ($line in $Fix) { Write-Host "       $line" -ForegroundColor Yellow }
         $script:fails++
     }
+}
+$script:notes = 0
+function Note {
+    param([string]$Label, [string[]]$Fix = @())
+    Write-Host "  [ !] $Label" -ForegroundColor Yellow
+    foreach ($line in $Fix) { Write-Host "       $line" -ForegroundColor DarkYellow }
+    $script:notes++
 }
 
 Write-Host 'Checking your app registration setup...' -ForegroundColor Cyan
@@ -98,6 +107,35 @@ foreach ($p in $probes) {
     Show $ok "Graph permission: $($p.perm)" $fix
 }
 
+# --- 4b. Least privilege for the audit app itself ---------------------------------------
+# Lists the application permissions the app holds (Application.Read.All covers this read) and
+# names any the audit never uses. Delegated permissions are ignored: the app signs in as itself.
+$needed = @($probes | ForEach-Object { $_.perm })
+try {
+    $self = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$cid')?`$select=id" -Headers $H
+    $held = Invoke-Paged "https://graph.microsoft.com/v1.0/servicePrincipals/$($self.id)/appRoleAssignments" $H
+    $resCache = @{}; $extra = @()
+    foreach ($a in @($held)) {
+        $rid = "$($a.resourceId)"
+        if (-not $resCache.ContainsKey($rid)) {
+            $res = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($rid)?`$select=appId,displayName,appRoles" -Headers $H
+            $byId = @{}; foreach ($ar in @($res.appRoles)) { $byId["$($ar.id)"] = "$($ar.value)" }
+            $resCache[$rid] = @{ appId = "$($res.appId)"; name = "$($res.displayName)"; roles = $byId }
+        }
+        $rc = $resCache[$rid]
+        $value = $rc.roles["$($a.appRoleId)"]
+        if (-not $value) { $value = "$($a.appRoleId)" }
+        if ($rc.appId -eq '00000003-0000-0000-c000-000000000000' -and $needed -contains $value) { continue }
+        $extra += "$value ($($rc.name))"
+    }
+    if ($extra.Count) {
+        Note "The app also holds permission(s) the audit never uses: $($extra -join ', ')" @(
+            'Least privilege: take them away. Entra portal > App registrations > your app > API permissions >',
+            'on each of those rows: ... > Revoke admin consent, then ... > Remove permission.'
+        )
+    }
+} catch {}
+
 # --- 5. Azure: which subscriptions can the app see, and which were selected? --------
 $armTok = Get-Token 'https://management.azure.com'
 $allSubs = @()
@@ -147,7 +185,13 @@ if ($rgSel.Count -gt 0) {
     )
 }
 
-# --- 6. Power Platform admin API (BAP): also the environment catalog for the scope --------
+# --- 6. Power Platform admin API (BAP): environments, DLP, tenant settings ----------------
+# Microsoft's only route for an app to read these is registering it as a Power Platform
+# management application, which gives it the rights of a Power Platform Administrator (granular
+# roles "can't be assigned to limit their capabilities"; the read-only Power Platform reader role
+# does not cover the environment list). The audit itself still only reads. With environments
+# selected, the Dataverse checks run without it, so it is optional; with none selected, it is how
+# the audit finds them.
 $bapOk = $false; $bapEnvs = @()
 $bapTok = Get-Token 'https://api.bap.microsoft.com'
 if ($bapTok) {
@@ -157,13 +201,25 @@ if ($bapTok) {
         $bapOk = $true
     } catch { $bapOk = $false }
 }
-Show $bapOk 'Power Platform admin API (environments, DLP, tenant settings)' @(
-    'The app is not registered as a Power Platform management application.',
-    'Run this once as an admin (any machine with PowerShell):',
+$bapHow = @(
+    'Microsoft offers one way: register the app as a Power Platform management app. That gives the app',
+    'the rights of a Power Platform Administrator (not read-only; the audit still only reads), so',
+    'register right before the run and remove it right after. In Windows PowerShell 5.1, as an admin:',
     '  Install-Module Microsoft.PowerApps.Administration.PowerShell -Scope CurrentUser',
     '  Add-PowerAppsAccount',
-    "  New-PowerAppManagementApp -ApplicationId $cid"
+    "  New-PowerAppManagementApp -ApplicationId $cid",
+    "  (after the run)  Remove-PowerAppManagementApp -ApplicationId $cid"
 )
+if ($bapOk) { Show $true 'Power Platform admin API (environments, DLP, tenant settings)' }
+elseif (@(Get-ScopeItems $scope.powerPlatform.environments).Count -gt 0) {
+    Note 'Power Platform admin API not readable (optional): DLP policies, tenant settings and the environment list are skipped' (@(
+        'Checks 1.3, 2.4 and 5.3 read Not checked; confirm them in the Power Platform admin center, or:') + $bapHow)
+} else {
+    Show $false 'Power Platform admin API (environments, DLP, tenant settings)' (@(
+        'No Dataverse environment is selected, so this is how the audit finds them. Either select them:',
+        '  ./run-audit.ps1 -Environments https://<org>.crm.dynamics.com   (several: comma-separated)',
+        'or let the audit read the environment list, DLP policies and tenant settings:') + $bapHow)
+}
 
 # --- 7. Dataverse: is the app an Application User in each environment in scope? -------
 # With a selection, ids and display names resolve through the catalog just read; without one,
@@ -177,18 +233,57 @@ if ($envUrls.Count -eq 0) {
     Write-Host '  [--] Dataverse: no environment selected or discovered (both Dataverse sweeps will be skipped). Select with scope.json / -Environments / DATAVERSE_ENVIRONMENTS, or fix the Power Platform admin API item above.' -ForegroundColor DarkGray
 } else {
     foreach ($envUrl in $envUrls) {
-        $ok = $false
+        $base = "$($envUrl.TrimEnd('/'))/api/data/v9.2/"
+        $who = $null; $Hd = $null
         $t = Get-Token $envUrl
         if ($t) {
-            try { Invoke-RestMethod -Uri "$($envUrl.TrimEnd('/'))/api/data/v9.2/WhoAmI" -Headers @{ Authorization = "Bearer $t" } | Out-Null; $ok = $true } catch { $ok = $false }
+            $Hd = @{ Authorization = "Bearer $t"; Accept = 'application/json'; 'OData-Version' = '4.0' }
+            try { $who = Invoke-RestMethod -Uri "${base}WhoAmI" -Headers $Hd } catch { $who = $null }
         }
-        Show $ok "Dataverse: $envUrl" @(
+        Show ($null -ne $who) "Dataverse: $envUrl" @(
             'The app is not an Application User in this environment (or has no role).',
             'Power Platform admin center > Environments > (this environment) > Settings >',
             'Users + permissions > Application users > New app user > add your app,',
-            'then give it a read-only security role (or run testdata/add-dataverse-app-user.ps1).',
+            'then give it a read-only security role (docs/permissions.md, section 4).',
             'Environments you do not audit can be left out with a scope (scope.json or -Environments).'
         )
+        if ($null -eq $who) { continue }
+
+        # The app user's own roles (needs Read on User and Security Role; left out quietly if not).
+        $roleNames = @()
+        try {
+            $me = Invoke-RestMethod -Uri "${base}systemusers($($who.UserId))?`$select=fullname&`$expand=systemuserroles_association(`$select=name)" -Headers $Hd
+            $roleNames = @($me.systemuserroles_association | ForEach-Object { "$($_.name)" } | Where-Object { $_ })
+        } catch {}
+
+        # One row of every read the two Dataverse sweeps make, so a missing privilege shows up
+        # here by table name instead of as a Not checked row after the run.
+        $missing = @(); $other = @(); $envType = $null
+        foreach ($k in @($script:DvReads.Keys)) {
+            $rd = $script:DvReads[$k]
+            try {
+                $resp = Invoke-RestMethod -Uri "$base$(Get-DvProbePath $rd)" -Headers $Hd
+                if ($k -eq 'orginfo' -and $resp.Detail) { $envType = ConvertTo-EnvSku $resp.Detail.OrganizationType }
+            } catch {
+                $why = Get-ErrorText $_
+                $tbl = Get-DvMissingTable $why
+                if ($tbl) { $missing += $tbl }
+                elseif ($why -match '\b403\b' -and $rd.Tables) { $missing += @($rd.Tables -split ',\s*') }
+                elseif ($why -match '\b403\b') { $missing += "whatever the $($rd.Label) read needs (Dataverse did not name it)" }
+                else { if ($why.Length -gt 300) { $why = $why.Substring(0, 300) + '...' }; $other += "$($rd.Label): $why" }
+            }
+        }
+        $missing = @($missing | Select-Object -Unique)
+        $roleText = if ($roleNames.Count) { "role ($($roleNames -join ', '))" } else { 'security role' }
+        Show ($missing.Count -eq 0) "Dataverse: the app user's $roleText can read everything the audit reads$(if($envType){" (environment type: $envType)"})" @(
+            "Add Read at Organization level on: $($missing -join ', ')",
+            'Power Platform admin center > Environments > (this environment) > Settings > Users + permissions >',
+            "Security roles > (the app user's role) > find each table > Read = Organization > Save.",
+            'Until then only the checks that need those tables read Not checked; the rest of the audit runs.'
+        )
+        foreach ($o in $other) { Note "Dataverse read failed (not a permission gap): $o" @('Only that check reads Not checked; the rest of the audit runs.') }
+        $broad = @($roleNames | Where-Object { $_ -in 'System Administrator', 'System Customizer' })
+        if ($broad.Count) { Note "The app user also holds $($broad -join ', '): far more than a read-only audit needs" @('Least privilege: keep only the custom read-only role (docs/permissions.md, section 4).') }
     }
 }
 foreach ($u in @($envRes.unresolved)) {
@@ -221,7 +316,7 @@ if ($scope.strict -and $blind) {
 # --- Summary ----------------------------------------------------------------------
 Write-Host ''
 if ($script:fails -eq 0) {
-    Write-Host 'Setup looks complete. Starting the audit...' -ForegroundColor Green
+    Write-Host "Setup looks complete$(if($script:notes){" ($($script:notes) optional note(s) marked [ !] above)"}). Starting the audit..." -ForegroundColor Green
 } else {
     Write-Host "Setup incomplete: $($script:fails) item(s) need attention (fixes above)." -ForegroundColor Yellow
     Write-Host 'The audit will still run and will skip whatever it cannot read.' -ForegroundColor Yellow

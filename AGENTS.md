@@ -110,15 +110,21 @@ planes, so the run is fully unattended. The app needs these, all read-only:
   `RoleManagement.Read.Directory`, `User.Read.All`, `Policy.Read.All`, `AuditLog.Read.All`,
   `DeviceManagementConfiguration.Read.All`, `DeviceManagementManagedDevices.Read.All`
 - Azure: the `Reader` role at each subscription scope
-- Dataverse: an Application User with a read-only security role in each environment
-- Power Platform admin API: register the app with `New-PowerAppManagementApp`
+- Dataverse: an Application User with a custom read-only security role in each environment:
+  Read at Organization level on Organization, Security Role, User, Solution, Publisher, Field
+  Security Profile, Email Server Profile, Mailbox and Queue
+- Power Platform admin API (optional): `New-PowerAppManagementApp`. It is NOT read-only: it gives
+  the app Power Platform Administrator rights. Without it, pick environments with
+  `-Environments`; environment security groups (1.3, 2.4) and DLP (5.3) then read Not checked
 
 Full details and per-permission reasoning are in [docs/permissions.md](docs/permissions.md).
 
 Every run starts with `scripts/check-setup.ps1`, a read-only preflight that probes each
-permission and prints the exact fix for anything missing. If `.env` is empty or the app cannot
-sign in, the run stops with setup instructions. Point the user at that checklist first when
-something fails.
+permission and prints the exact fix for anything missing. It reads one row through every
+Dataverse query and names any table the app user's role is missing, and it lists application
+permissions the app holds but the audit never uses. `[ X]` needs a fix, `[ !]` is optional or a
+least-privilege note. If `.env` is empty or the app cannot sign in, the run stops with setup
+instructions. Point the user at that checklist first when something fails.
 
 ## Reading the output
 
@@ -392,7 +398,13 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   Expected; ignore.
 - **`pp-dlp-policies.json` is `[]`**: a real result, not an error. The tenant has no connector
   data policy, and 5.3 reads Gap. A `pp-dlp-policies-ERROR.json` instead means the app is not
-  registered as a Power Platform management application.
+  registered as a Power Platform management application, which is optional because it gives the
+  app admin rights (docs/permissions.md, section 5). DLP is then confirmed by hand.
+- **Solutions missing** (`dv-*-solutions-ERROR.json` naming `prvReadPublisher`): the solution
+  read expands each solution's publisher, so the role needs Read on Publisher as well.
+- **Environment type**: from `pp-environments.json` when the admin API was read, otherwise from
+  `dv-<env>-orginfo.json` (the environment's own OrganizationType). When neither was read, the
+  findings say "type not read" and state the Production severity instead of guessing.
 - **Roles, solutions and per-table audit flags all Not checked**: the basic `dataverse-sweep`
   read nothing: no environment was selected or discovered (Power Platform sweep skipped, or the
   app not registered as a management app), or the app is not an Application User anywhere.
@@ -402,8 +414,8 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   per-user sign-in activity needs AuditLog.Read.All and an Entra ID P1 licence in the tenant.
 - **System Administrator holders missing**: `dv-*-users-ERROR.json` exists. The app user's role
   needs Read on User and Security Role in that environment (see docs/permissions.md).
-- **Every Power Platform check Not checked**: the BAP token failed. Register the app with
-  `New-PowerAppManagementApp` (see docs/permissions.md).
+- **Every Power Platform check Not checked**: the app is not registered as a management app
+  (optional, see docs/permissions.md section 5), or the BAP token failed.
 
 ## Privacy
 
