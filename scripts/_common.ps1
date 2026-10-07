@@ -136,8 +136,8 @@ function Save-Json {
 # selection themselves when they run alone. Nothing in this section touches the tenant.
 # Helpers return plain arrays; callers wrap results in @( ) (an empty plain return is nothing).
 # ---------------------------------------------------------------------------------------------
-$script:ScopeReaders          = @('sql', 'synapse', 'keyvault', 'nsg', 'loganalytics', 'logicapps')   # per-resource readers: scopeable by group, type and name
-$script:ScopeSubscriptionWide = @('rbac', 'defender', 'diagnostics')                                  # always run for every selected subscription
+$script:ScopeReaders          = @('sql', 'synapse', 'keyvault', 'nsg', 'loganalytics', 'logicapps', 'storage', 'vm', 'appservice', 'automation', 'apiconnections')   # per-resource readers: scopeable by group, type and name
+$script:ScopeSubscriptionWide = @('rbac', 'defender', 'diagnostics', 'inventory')                     # always run for every selected subscription
 
 # Non-null, non-empty items of a value that may be $null, one item or an array.
 function Get-ScopeItems($v) { return @($v | Where-Object { $null -ne $_ -and "$_" -ne '' }) }
@@ -443,6 +443,7 @@ $script:DvReads = [ordered]@{
     queues        = @{ File = 'queues';           Label = 'queues';                  Tables = 'Queue';                  Path = 'queues?$select=name&$top=5&$count=true' }
     mailboxes     = @{ File = 'mailboxes';        Label = 'mailboxes';               Tables = 'Mailbox';                Path = 'mailboxes?$select=name,statecode&$top=5&$count=true' }
     fieldperms    = @{ File = 'fieldpermissions'; Label = 'field permissions';       Tables = 'Field Security Profile'; Path = 'fieldpermissions?$select=attributelogicalname,fieldsecurityprofileid' }
+    ipfirewall    = @{ File = 'ipfirewall';       Label = 'IP firewall settings';    Tables = 'Organization';           Path = 'organizations?$select=name,enableipbasedfirewallrule,enableipbasedfirewallruleinauditmode,allowediprangeforfirewall,allowedservicetagsforfirewall,allowapplicationuseraccess,allowmicrosofttrustedservicetags' }
 }
 function Get-DvProbePath($read) {
     if ($read.Probe) { return $read.Probe }
@@ -511,3 +512,57 @@ function Get-EnvSkuMap([string]$OutDir) {
     }
     return @{ sku = $sku; source = $src }
 }
+
+# ---------------------------------------------------------------------------------------------
+# IPv4 allowlist grading, shared by every reader that has an allowlist (SQL, Synapse, storage,
+# NSG, App Service, Logic Apps, the Dataverse IP firewall). Get-IpRange turns '10.0.0.0/8',
+# '1.2.3.4', '1.2.3.4-1.2.3.9', '*' / 'Internet' / 'Any' into @(start, end) as numbers; IPv6 and
+# service tags return $null (listed, not graded). Get-IpBreadth: 'internet' for everything,
+# 'broad' for wider than a /16 (65,536 addresses), else $null.
+# ---------------------------------------------------------------------------------------------
+function Get-IpNumber($ip) {
+    $o = "$ip".Trim().Split('.')
+    if ($o.Count -ne 4) { return $null }
+    $n = [double]0
+    foreach ($x in $o) { $v = 0; if (-not [int]::TryParse($x, [ref]$v) -or $v -lt 0 -or $v -gt 255) { return $null }; $n = $n * 256 + $v }
+    return $n
+}
+function Get-IpRange([string]$Text) {
+    $t = "$Text".Trim()
+    if ($t -in '*', 'Any', 'Internet', '0.0.0.0/0') { return ,@([double]0, [double]4294967295) }
+    if ($t -match '^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$') {
+        $a = Get-IpNumber $Matches[1]; $bits = [int]$Matches[2]
+        if ($null -eq $a -or $bits -gt 32) { return $null }
+        $size = [math]::Pow(2, 32 - $bits); $start = [math]::Floor($a / $size) * $size
+        return ,@($start, ($start + $size - 1))
+    }
+    if ($t -match '^(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3}(?:\.\d{1,3}){3})$') {
+        $b2 = $Matches[2]; $a = Get-IpNumber $Matches[1]; $b = Get-IpNumber $b2
+        if ($null -eq $a -or $null -eq $b) { return $null }
+        return ,@($a, $b)
+    }
+    $a = Get-IpNumber $t
+    if ($null -ne $a) { return ,@($a, $a) }
+    return $null
+}
+function Get-IpBreadth($Range, [switch]$IgnorePrivate) {
+    if ($null -eq $Range -or @($Range).Count -ne 2) { return $null }
+    if ($Range[0] -eq 0 -and $Range[1] -eq 4294967295) { return 'internet' }
+    # -IgnorePrivate (NSG sources): 10/8, 172.16/12, 192.168/16 and 100.64/10 are internal space.
+    if ($IgnorePrivate) {
+        foreach ($pr in @(@(167772160, 184549375), @(2886729728, 2887778303), @(3232235520, 3232301055), @(1681915904, 1686110207))) {
+            if ($Range[0] -ge $pr[0] -and $Range[1] -le $pr[1]) { return $null }
+        }
+    }
+    if (($Range[1] - $Range[0] + 1) -gt 65536) { return 'broad' }
+    return $null
+}
+
+# ARM types that a security rule reads (directly, or as part of another reader). Everything else
+# in the resource inventory is reported as inventory only (assessment report, inventory-check.ps1).
+$script:CoveredArmTypes = @('microsoft.sql/servers', 'microsoft.sql/servers/databases', 'microsoft.synapse/workspaces',
+    'microsoft.synapse/workspaces/bigdatapools', 'microsoft.synapse/workspaces/sqlpools', 'microsoft.keyvault/vaults',
+    'microsoft.network/networksecuritygroups', 'microsoft.network/networkinterfaces', 'microsoft.network/publicipaddresses',
+    'microsoft.network/virtualnetworks', 'microsoft.compute/virtualmachines', 'microsoft.storage/storageaccounts',
+    'microsoft.web/sites', 'microsoft.web/connections', 'microsoft.logic/workflows', 'microsoft.automation/automationaccounts',
+    'microsoft.automation/automationaccounts/runbooks', 'microsoft.operationalinsights/workspaces')

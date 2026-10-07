@@ -43,12 +43,18 @@ $ReaderByType = @{
     'microsoft.network/networksecuritygroups'  = 'nsg'
     'microsoft.logic/workflows'                = 'logicapps'
     'microsoft.operationalinsights/workspaces' = 'loganalytics'
+    'microsoft.storage/storageaccounts'        = 'storage'
+    'microsoft.compute/virtualmachines'        = 'vm'
+    'microsoft.web/sites'                      = 'appservice'
+    'microsoft.automation/automationaccounts'  = 'automation'
+    'microsoft.web/connections'                = 'apiconnections'
 }
+# Read as part of another reader (pinning names would not apply to them), or inventory only.
 $PlannedByType = @{
-    'microsoft.compute/virtualmachines' = 'no reader yet (planned: VM exposure - public IPs, NSG source breadth)'
-    'microsoft.storage/storageaccounts' = 'no reader yet (planned: storage network rules)'
-    'microsoft.web/sites'               = 'no reader yet (planned: Function App access restrictions)'
-    'microsoft.web/connections'         = 'no reader yet (planned: API connections)'
+    'microsoft.network/networkinterfaces' = 'read by the vm reader (every interface in scope)'
+    'microsoft.network/publicipaddresses' = 'read by the vm reader (every public IP in scope)'
+    'microsoft.network/virtualnetworks'   = 'read by the vm reader (subnet NSGs)'
+    'microsoft.web/serverfarms'           = 'inventory only (the apps on the plan are read by appservice)'
 }
 $Notes = @(
     'Empty lists (or a missing key) mean everything the app can read.',

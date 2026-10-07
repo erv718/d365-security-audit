@@ -223,6 +223,7 @@ loading them.
 | `pp-environments.json` | 250 to 300 KB | query per environment or per property |
 | `applications.json` | 200 KB or more | query for expiring credentials or one app |
 | `arm-*-rbac.json`, `arm-*-nsgs.json` | 100 to 200 KB each | query |
+| `arm-*-resources.json` | grows with the estate (about 200 bytes per resource) | query by type or name |
 
 Rule of thumb: anything over about 50 KB is extracted with jq or PowerShell, never opened in
 full. Check sizes first:
@@ -416,6 +417,12 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   needs Read on User and Security Role in that environment (see docs/permissions.md).
 - **Every Power Platform check Not checked**: the app is not registered as a management app
   (optional, see docs/permissions.md section 5), or the BAP token failed.
+- **An app in `arm-*-appservice.json` has `errors` and no `config`**: that app's web config could
+  not be read (locked down, or the API refused); its TLS, FTP and access-restriction checks are
+  skipped for that app only. The other apps are unaffected.
+- **"type not read" or no VM finding for a VM with a public IP**: a subnet the run did not read
+  (another subscription, or a resource group outside the scope) is never assumed to lack an NSG,
+  so such a VM is listed as on the internet but not as unprotected.
 
 ## Privacy
 
@@ -445,7 +452,14 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   config (auditing, roles, solutions, field security; org settings, email profiles, mailboxes,
   queues, field permissions).
 - `scripts/azure-sweep.ps1`, `scripts/azure-plus.ps1` - Azure ARM (RBAC, SQL, Synapse, Key
-  Vault, NSGs; Defender plans, Log Analytics and Sentinel, diagnostic settings, Logic Apps).
+  Vault, NSGs; Defender plans, Log Analytics and Sentinel, diagnostic settings, Logic Apps with
+  their triggers and allowed callers).
+- `scripts/azure-exposure.ps1` - the resource inventory (`arm-*-resources.json`), storage
+  accounts, VMs with their network interfaces, public IPs and subnets, App Service and Function
+  Apps (web config and HTTP functions), Automation accounts, API connections. Reader only; it
+  never requests keys, app settings or connection secrets.
+- `scripts/inventory-check.ps1 -FromInventory <export.csv>` - cross-checks a portal inventory
+  export against `arm-*-resources.json` (local files only) and writes `output/inventory-check.md`.
 - `scripts/analyze.ps1`, `scripts/assessment-report.ps1` - build the ranked findings and the
   29-check report from `./output`. Local processing only, no network calls.
 - `scripts/ai-analysis.ps1` - optional mitigation analysis, OFF by default (`AI_ANALYSIS` in

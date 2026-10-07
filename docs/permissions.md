@@ -64,7 +64,12 @@ page, on each such row, **...** > **Revoke admin consent**, then **...** > **Rem
 
 ## 3. Azure subscriptions (ARM)
 
-The app needs the **Reader** role on each subscription you want audited.
+The app needs the **Reader** role on each subscription you want audited. Reader covers every
+Azure read the audit makes: role assignments, SQL and Synapse firewalls, Key Vaults, NSGs, VMs
+and their network interfaces and public IPs, storage accounts, App Service and Function Apps
+(web config and function list), Logic Apps, Automation accounts, API connections and the
+resource inventory. It never asks for keys, app settings or connection secrets, which Reader
+cannot read anyway.
 
 1. Go to **portal.azure.com** > **Subscriptions** > click a subscription.
 2. While here, copy the **Subscription ID** (goes in `.env` under `AZURE_SUBSCRIPTIONS`).

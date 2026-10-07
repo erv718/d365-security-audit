@@ -42,6 +42,7 @@ This tool reads the configuration directly, so the findings are based on the liv
 
 **Data platform (Dataverse, per environment)**
 - The environment's type (Production, Sandbox), read from the environment itself
+- The IP firewall: off, audit-only, or enforced (and its allowed ranges)
 - Whether auditing is turned on (org level, user-access auditing, read-log auditing, retention) and per table
 - Security roles, whether any custom roles exist, and who holds System Administrator (people and the organisation's own application users)
 - Solution inventory, and unmanaged solutions sitting in Production environments
@@ -52,10 +53,15 @@ This tool reads the configuration directly, so the findings are based on the liv
 - Role assignments: Owner sprawl (more than 3 owners at subscription scope) and service principals holding Owner or User Access Administrator
 - SQL servers: public network access, minimum TLS version, and "allow all Azure IPs" firewall rules
 - Synapse workspaces: public network access and "allow all Azure IPs"
-- Allowed-IP firewall rules on SQL servers and Synapse workspaces, graded by breadth (whole internet, wider than a /16)
+- Virtual machines: which ones have a public IP, and which of those have no NSG on the network interface or the subnet
+- Network security groups: every inbound rule open to the internet, graded by port (remote-admin and database ports, or all ports, are HIGH), and source ranges open to every Azure customer
+- Storage accounts: open to all networks, anonymous blob access, HTTPS and TLS, shared-key authorization
+- App Service and Function Apps: HTTPS Only, TLS, plain FTP, remote debugging, access restrictions, and HTTP functions that need no key
+- Logic Apps whose HTTP trigger accepts calls from any IP; Automation accounts still holding a retired Run As connection; API connections that sign in as a named (or dormant) account
+- Every allowlist in one place, graded by breadth (whole internet, wider than a /16): SQL and Synapse firewalls, storage IP rules, NSG sources, App Service access restrictions, Logic App caller ranges and the Dataverse IP firewall
 - Key Vaults: RBAC vs legacy access policies, and public network access
-- Network security groups: RDP/SSH rules open to the internet
-- Defender for Cloud plans (Standard vs Free), Log Analytics workspaces and Sentinel onboarding, activity-log diagnostic settings, Logic Apps
+- Defender for Cloud plans (Standard vs Free), Log Analytics workspaces and Sentinel onboarding, activity-log diagnostic settings
+- The full resource inventory, with which types a security rule checks; `scripts/inventory-check.ps1 -FromInventory <export.csv>` (or `run-audit.ps1 -Inventory <export.csv>`) cross-checks it against your own portal export
 
 **The assessment report**
 

@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "notes": [
+    "Copy this file to scope.json next to .env, or pass any path with ./run-audit.ps1 -Scope <file>.",
+    "Every list is optional. An empty list, or a missing key, means everything the app can read.",
+    "Subscriptions match by id or display name; environments by instance URL, environment id or display name.",
+    "types limits the per-resource readers (sql, synapse, keyvault, nsg, loganalytics, logicapps, storage, vm, appservice, automation, apiconnections); rbac, defender, diagnostics and the resource inventory always run per selected subscription.",
+    "resources pins names per reader; delete that block to audit whole resource groups.",
+    "Precedence: run-audit.ps1 parameters > this file > AZURE_SUBSCRIPTIONS and DATAVERSE_ENVIRONMENTS in .env.",
+    "A run with any selection is labelled PARTIAL in output/assessment-report.md; a selection the app cannot see reads Not checked (or stops the run with -StrictScope)."
+  ],
+  "azure": {
+    "subscriptions": ["00000000-0000-0000-0000-000000000000", "Production"],
+    "resourceGroups": ["rg-d365-prod", "rg-integration"],
+    "types": ["sql", "synapse", "keyvault", "nsg"],
+    "resources": {
+      "synapse": ["synapse-prod"],
+      "sql": ["sql-prod"]
+    }
+  },
+  "powerPlatform": {
+    "environments": ["https://yourorg.crm.dynamics.com", "Production"]
+  }
+}

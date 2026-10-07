@@ -315,6 +315,22 @@ $sqlN = $sqlServers.Count
 $sqlTlsWeak  = @($sqlServers | Where-Object { $v = "$($_.properties.minimalTlsVersion)"; $v -and ($v -notin '1.2','1.3') })
 $sqlTlsUnset = Cnt ($sqlServers | Where-Object { -not "$($_.properties.minimalTlsVersion)" })
 
+# Storage accounts, App Service, Logic App triggers, API connections, Automation and the resource
+# inventory (azure-exposure.ps1 / azure-plus.ps1), for 3.1, 6.1 and the coverage section.
+function LoadAll($pat) { $all = @(); $n = 0; foreach ($f in @(LFiles $pat)) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $n++; $all += @($x | Where-Object { $_ }) }; return [pscustomobject]@{ items = $all; read = $n } }
+$st = LoadAll 'arm-*-storage.json'; $stAll = @($st.items)
+$stWeak = @($stAll | Where-Object { $_.supportsHttpsTrafficOnly -eq $false -or "$($_.minimumTlsVersion)" -in 'TLS1_0', 'TLS1_1' })
+$sites = LoadAll 'arm-*-appservice.json'; $siteAll = @($sites.items)
+$siteWeak = @($siteAll | Where-Object { $_.httpsOnly -eq $false -or ($_.config -and "$($_.config.minTlsVersion)" -in '1.0', '1.1') })
+$fnApps = @($siteAll | Where-Object { "$($_.kind)" -match 'functionapp' }).Count
+$anonFn = 0; foreach ($sx in $siteAll) { $anonFn += @($sx.functions | Where-Object { $_ -and $_.httpTrigger -and "$($_.authLevel)" -eq 'anonymous' -and $_.disabled -ne $true }).Count }
+$la = LoadAll 'arm-*-logicapps.json'
+$laHttpOpen = @($la.items | Where-Object { @($_.triggers | Where-Object { $_ -and "$($_.type)" -eq 'Request' }).Count -and "$($_.callers)" -eq 'any' -and $_.entraAuthPolicy -ne $true }).Count
+$conn = LoadAll 'arm-*-apiconnections.json'; $connNamed = @($conn.items | Where-Object { "$($_.authenticatedUser)" -match '@' }).Count
+$aa = LoadAll 'arm-*-automation.json'
+$runAsN = @($aa.items | Where-Object { @($_.connections | Where-Object { $_ -and ("$($_.type)" -eq 'AzureServicePrincipal' -or "$($_.name)" -in 'AzureRunAsConnection', 'AzureClassicRunAsConnection') }).Count }).Count
+$inv = LoadAll 'arm-*-resources.json'
+
 # Environments. Microsoft does not allow a security group on Default or Developer environments,
 # and Teams environments get their team's group automatically - only the rest are "eligible".
 $envAll   = @($ppEnv | Where-Object { $_ -and $_.properties })
@@ -427,13 +443,15 @@ Chk '2.5' '2 Authentication' 'Security groups (MS-template duplicate of 2.4)' $s
 
 # Domain 3 - Data security
 $e31 = 'Platform fact: Dataverse/D365 encrypt data at rest (Microsoft-managed keys by default) and in transit (TLS 1.2+).'
-if (-not (Have $ppEnv) -and $sqlN -eq 0) {
+if (-not (Have $ppEnv) -and $sqlN -eq 0 -and $stAll.Count -eq 0 -and $siteAll.Count -eq 0) {
     $s31 = 'Not checked'
-    $e31 += ' Nothing tenant-specific was read (no environment inventory, no Azure SQL servers), so the platform default is not confirmed for this tenant.'
+    $e31 += ' Nothing tenant-specific was read (no environment inventory, no Azure SQL servers, storage accounts or apps), so the platform default is not confirmed for this tenant.'
 } else {
-    if ($sqlTlsWeak.Count -gt 0) { $s31 = 'Partial' } else { $s31 = 'Aligned' }
+    if ($sqlTlsWeak.Count -gt 0 -or $stWeak.Count -gt 0 -or $siteWeak.Count -gt 0) { $s31 = 'Partial' } else { $s31 = 'Aligned' }
     if (Have $ppEnv) { $e31 += " $($envDv.Count) Dataverse environment(s) inventoried on that platform." }
     if ($sqlN -gt 0) { $e31 += " Adjacent Azure data stores: $($sqlN - $sqlTlsWeak.Count - $sqlTlsUnset) of $sqlN SQL server(s) enforce minimum TLS 1.2$(if($sqlTlsWeak.Count){'; older TLS still accepted on: ' + (Names ($sqlTlsWeak | ForEach-Object { $_.name }))})." }
+    if ($stAll.Count) { $e31 += " Storage: $($stAll.Count - $stWeak.Count) of $($stAll.Count) account(s) require HTTPS with TLS 1.2$(if($stWeak.Count){'; not: ' + (Names ($stWeak | ForEach-Object { $_.name }))})." }
+    if ($siteAll.Count) { $e31 += " App Service: $($siteAll.Count - $siteWeak.Count) of $($siteAll.Count) app(s) force HTTPS with TLS 1.2$(if($siteWeak.Count){'; not: ' + (Names ($siteWeak | ForEach-Object { $_.name }))})." }
 }
 $e31 += ' Not verified: whether customer-managed keys are required by policy and enabled - PPAC > Manage > Environments > (env) > See all > Encryption.'
 Chk '3.1' '3 Data security' 'Encryption at rest / in transit' $s31 $e31 'azure'
@@ -498,7 +516,17 @@ else {
 Chk '5.3' '5 Security settings' 'DLP / IRM / classification' $s53 $e53
 
 # Domain 6 - Integration security
-Chk '6.1' '6 Integration' 'External integration security' $(if($logicReadN -eq 0){'Not checked'}else{'Partial'}) $(if($logicReadN -eq 0){'Logic Apps not read (needs Reader on the subscriptions).'}else{"$logicApps Logic App workflow(s) inventoried across $($logicReadN) subscription(s); per-integration auth to review."}) 'azure'
+if ($logicReadN -eq 0 -and $sites.read -eq 0 -and $conn.read -eq 0 -and $aa.read -eq 0) { $s61 = 'Not checked'; $e61 = 'Logic Apps, Function Apps, API connections and Automation accounts not read (needs Reader on the subscriptions).' }
+else {
+    $s61 = 'Partial'
+    $parts61 = @()
+    if ($logicReadN -gt 0) { $parts61 += "$logicApps Logic App workflow(s)$(if($laHttpOpen){" ($laHttpOpen start from an HTTP request open to any IP)"})" }
+    if ($sites.read -gt 0) { $parts61 += "$fnApps Function App(s) and $($siteAll.Count - $fnApps) other app(s)$(if($anonFn){" ($anonFn HTTP function(s) need no key)"})" }
+    if ($conn.read -gt 0) { $parts61 += "$(@($conn.items).Count) API connection(s)$(if($connNamed){" ($connNamed sign in as a named account)"})" }
+    if ($aa.read -gt 0) { $parts61 += "$(@($aa.items).Count) Automation account(s)$(if($runAsN){" ($runAsN still hold a retired Run As connection)"})" }
+    $e61 = "Integrations inventoried: $($parts61 -join ', '). Per-integration authentication to review; the findings name each exposed one."
+}
+Chk '6.1' '6 Integration' 'External integration security' $s61 $e61 'azure'
 Chk '6.2' '6 Integration' 'API keys / credentials / tokens' $(if(-not (Have $apps)){'Not checked'}elseif($expiredSecrets -gt 0){'Gap'}else{'Partial'}) $(if(-not (Have $apps)){'App credentials not read (needs Application.Read.All with admin consent).'}else{"$expiredSecrets expired app credential(s) still present across $(Cnt $apps) app registrations; secret rotation/vaulting practice to confirm."})
 
 # Domain 7 - Incident response
@@ -531,7 +559,7 @@ $errSource = @{
     '4.3' = @('arm-*-sentinel.json'); '4.4' = @('arm-*-sentinel.json')
     '5.2' = @('dvplus-*-fieldpermissions.json', 'dv-*-fieldsec.json')
     '5.3' = @('pp-dlp-policies.json')
-    '6.1' = @('arm-*-logicapps.json')
+    '6.1' = @('arm-*-logicapps.json', 'arm-*-appservice.json', 'arm-*-apiconnections.json', 'arm-*-automation.json')
 }
 foreach ($c in $checks) {
     if ($c.Status -ne 'Not checked' -or -not $errSource.ContainsKey($c.No)) { continue }
@@ -586,6 +614,19 @@ $md += ""
 $md += "### Guest accounts"
 if ($null -ne $guestTotal) { $md += "- $guestTotal guest account(s)$(if($topDomains.Count){" across $domainN home domain(s); top 3: $($topDomains -join ', ')"}). Confirm access reviews cover them (Entra admin center > Identity governance > Access reviews)." }
 else { $md += "- Guest count not read (needs User.Read.All with admin consent)." }
+$md += ""
+$md += "### Azure inventory coverage"
+if ($inv.read -gt 0) {
+    # ARM types a security rule reads ($CoveredArmTypes, _common.ps1); the rest are listed as inventory only.
+    $covered = $script:CoveredArmTypes
+    $byType = @($inv.items | Group-Object { "$($_.type)".ToLower() } | Sort-Object @{ Expression = 'Count'; Descending = $true }, Name)
+    $chk = @($byType | Where-Object { $covered -contains $_.Name } | ForEach-Object { "$(("$($_.Group[0].type)" -split '/')[-1]) ($($_.Count))" })
+    $only = @($byType | Where-Object { $covered -notcontains $_.Name } | ForEach-Object { "$(("$($_.Group[0].type)" -split '/')[-1]) ($($_.Count))" })
+    $md += "- $(@($inv.items).Count) resource(s) of $($byType.Count) type(s) visible to the app in $($inv.read) subscription(s) read (output/arm-*-resources.json)."
+    $md += "- Checked by a security rule: $(if($chk.Count){$chk -join ', '}else{'none'})."
+    $md += "- Inventoried only (no security rule yet): $(if($only.Count){$only -join ', '}else{'none'})."
+    $md += "- To cross-check against your own inventory export: ./scripts/inventory-check.ps1 -FromInventory <export.csv>."
+} else { $md += "- Resource inventory not read (azure-exposure.ps1; needs Reader on the subscriptions)." }
 $md += ""
 $md += "### Technical findings (from analyze.ps1)"
 $md += ""

@@ -19,8 +19,10 @@ param(
     [string[]]$Subscriptions,       # subscription ids or display names
     [string[]]$ResourceGroups,      # resource group names (resource readers list per group)
     [string[]]$Environments,        # Dataverse environment URLs, ids or display names
-    [string[]]$Types,               # resource readers: sql, synapse, keyvault, nsg, loganalytics, logicapps
-    [switch]$StrictScope            # stop when a selected subscription, group or environment is not visible
+    [string[]]$Types,               # resource readers: sql, synapse, keyvault, nsg, loganalytics, logicapps,
+                                    #   storage, vm, appservice, automation, apiconnections
+    [switch]$StrictScope,           # stop when a selected subscription, group or environment is not visible
+    [string[]]$Inventory            # your portal inventory export(s) (CSV) to cross-check at the end
 )
 
 $here = $PSScriptRoot
@@ -76,11 +78,13 @@ try {
     if (-not $SkipAzure) {
         Step 'scripts/azure-sweep.ps1'
         Step 'scripts/azure-plus.ps1'
+        Step 'scripts/azure-exposure.ps1'
     }
 
     Step 'scripts/analyze.ps1'
     Step 'scripts/assessment-report.ps1'   # maps the pulls to the MS 29-check assessment + extras
     Step 'scripts/ai-analysis.ps1'         # optional; no-op unless AI_ANALYSIS=local|api in .env
+    if ($Inventory) { & (Join-Path $here 'scripts/inventory-check.ps1') -FromInventory $Inventory }
 
     Write-Host "`nDone. Raw evidence: ./output/*.json" -ForegroundColor Green
     $eff = Join-Path $here 'output/scope-effective.json'

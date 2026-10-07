@@ -106,9 +106,22 @@ foreach ($s in $subs) {
         Write-Host '    Logic Apps...' -ForegroundColor Cyan
         try {
             $logic = @(Select-ScopedResources $scope 'logicapps' (Get-ArmScoped $base $groups 'Microsoft.Logic/workflows?api-version=2016-06-01'))
+            # Triggers (type 'Request' = callable over HTTP) and who may call them: no
+            # accessControl = any IP; an empty allowedCallerIpAddresses list = only other Logic
+            # Apps; a list = those ranges. An Entra ID authorization policy is noted separately.
             $logicInfo = foreach ($la in $logic) {
                 $rg = if ($la.id -match '/resourceGroups/([^/]+)/') { $Matches[1] } else { $null }
-                [pscustomobject]@{ name = $la.name; location = $la.location; resourceGroup = $rg; state = $la.properties.state; id = $la.id }
+                $trig = @()
+                $defT = $la.properties.definition.triggers
+                if ($defT) { foreach ($tp in @($defT.PSObject.Properties)) { $trig += [pscustomobject]@{ name = $tp.Name; type = "$($tp.Value.type)"; kind = "$($tp.Value.kind)" } } }
+                $ac = $la.properties.accessControl.triggers
+                $callers = 'any'; $ips = @()
+                if ($ac -and ($ac.PSObject.Properties.Name -contains 'allowedCallerIpAddresses')) {
+                    $ips = @(@($ac.allowedCallerIpAddresses) | Where-Object { $_ } | ForEach-Object { "$($_.addressRange)" })
+                    $callers = if ($ips.Count) { 'ip-list' } else { 'logic-apps-only' }
+                }
+                $entra = [bool]($ac -and $ac.openAuthenticationPolicies -and $ac.openAuthenticationPolicies.policies -and @($ac.openAuthenticationPolicies.policies.PSObject.Properties).Count)
+                [pscustomobject]@{ name = $la.name; location = $la.location; resourceGroup = $rg; state = $la.properties.state; id = $la.id; triggers = $trig; callers = $callers; allowedCallerIps = $ips; entraAuthPolicy = $entra }
             }
             $logicInfo = @($logicInfo)
             $logicCount = $logicInfo.Count

@@ -38,7 +38,7 @@ template, so it mirrors 2.4's verdict and is left out of the tally.
 | 2.3 | PIM / segregation of duties | `pim-eligible.json`, `pim-active.json` | graph-identity-plus | Eligible assignments > 0 = Aligned; 0 = Gap (all admin access is standing); no Entra ID P2 (error AadPremiumLicenseRequired) = Gap |
 | 2.4 | Security groups restrict environment access | as 1.3 | powerplatform-sweep | Same evidence and verdict as 1.3 |
 | 2.5 | Security groups (Microsoft template duplicate of 2.4) | as 1.3 | powerplatform-sweep | Mirrors 2.4; excluded from the tally |
-| 3.1 | Encryption at rest / in transit | `pp-environments.json`, `arm-*-sql.json` (`minimalTlsVersion`) | powerplatform-sweep, azure-sweep | Platform fact. Nothing read = Not checked; any SQL server accepting TLS below 1.2 = Partial; else Aligned. Customer-managed keys always listed as not verified |
+| 3.1 | Encryption at rest / in transit | `pp-environments.json`, `arm-*-sql.json` (`minimalTlsVersion`), `arm-*-storage.json`, `arm-*-appservice.json` | powerplatform-sweep, azure-sweep, azure-exposure | Platform fact. Nothing read = Not checked; any SQL server, storage account or app accepting TLS below 1.2 or plain HTTP = Partial; else Aligned. Customer-managed keys always listed as not verified |
 | 3.2 | Customer Lockbox + consent | none | | MANUAL: PPAC > Manage > Tenant settings > Customer Lockbox |
 | 3.3 | PII / sensitivity labels | none | | MANUAL: Purview portal > Information Protection |
 | 3.4 | Data retention | `dv-*-org.json`, `dvplus-*-org-settings.json` (`auditretentionperiodv2`) | dataverse-sweep, dataverse-plus | Audit-log retention set in any environment = Partial; none = Gap. Business-data retention (Dataverse long-term retention, Purview) is stated as not verified |
@@ -51,7 +51,7 @@ template, so it mirrors 2.4's verdict and is left out of the tally.
 | 5.1 | Security role design | `dv-*-roles.json` | dataverse-sweep | As 1.2 |
 | 5.2 | Field-level / record / BU security | `dvplus-*-fieldpermissions.json`, `dv-*-fieldsec.json` | dataverse-plus, dataverse-sweep | Any field permission, or a field security profile other than the built-in System Administrator one, = Partial; none = Gap. Counted per environment |
 | 5.3 | DLP / IRM / classification | `pp-dlp-policies.json`, `pp-environments.json` | powerplatform-sweep | 0 policies = Gap; default environment covered = Aligned; otherwise Partial |
-| 6.1 | External integration security | `arm-*-logicapps.json` | azure-plus | Inventory produced = Partial |
+| 6.1 | External integration security | `arm-*-logicapps.json`, `arm-*-appservice.json`, `arm-*-apiconnections.json`, `arm-*-automation.json` | azure-plus, azure-exposure | Inventory produced = Partial; the evidence counts Logic Apps open to any caller, HTTP functions that need no key, API connections signed in as a named account and retired Run As connections |
 | 6.2 | API keys / credentials / tokens | `applications.json` | graph-sweep | An expired credential still present = Gap; else Partial |
 | 7.1 | Incident response plan | none | | MANUAL (a document and a process) |
 | 7.2 | Vulnerability scanning / pen testing | `arm-*-defender-pricings.json` | azure-plus | Any documented Defender plan on Standard = Partial; else MANUAL |
@@ -81,9 +81,17 @@ dormant accounts (90+ days) and dormant accounts holding a directory role or Dat
 Administrator (`users-signin-activity.json`); Dataverse auditing off per environment and per key
 table; zero custom security roles; who holds System Administrator, including the organisation's
 own application users (`dv-*-users.json`); unmanaged solutions in Production environments; SQL
-servers and Synapse workspaces with public access or an allow-all-Azure rule; firewall rules
-graded by breadth; Owner sprawl and service principals holding Owner (`arm-*-rbac.json`); NSG
-rules opening RDP or SSH to the internet; Key Vaults on access policies or with public access.
+servers and Synapse workspaces with public access or an allow-all-Azure rule; every allowlist
+(SQL, Synapse, storage, NSG sources, App Service, Logic Apps, the Dataverse IP firewall) graded
+by breadth; Owner sprawl and service principals holding Owner (`arm-*-rbac.json`); NSG rules
+open to the internet graded by port; VMs with a public IP, and those with no NSG at all;
+storage accounts open to all networks, with anonymous blob access, plain HTTP, old TLS or
+shared keys; App Service and Function Apps without HTTPS Only, on old TLS, with plain FTP or
+remote debugging, open to any IP, or with HTTP functions that need no key; Logic Apps open to
+any caller; retired Automation Run As connections; API connections signed in as a named or
+dormant account; the Dataverse IP firewall off or in audit-only mode; Key Vaults on access
+policies or with public access. The report also lists which resource types in the inventory a
+security rule checks, and `inventory-check.ps1` cross-checks a portal export.
 
 When a pull fails, every **Not checked** row it feeds quotes the service's own error from the
 matching `*-ERROR.json` (HTTP status, error code, message).

@@ -27,6 +27,26 @@ function Add-Finding($sev, $area, $text, $plane = 'tenant') {
     $script:findings += [pscustomobject]$f
 }
 
+# Allowed-IP rules across the estate (SQL and Synapse firewalls, storage IP rules, NSG sources,
+# App Service access restrictions, Logic App caller ranges, the Dataverse IP firewall), graded by
+# breadth: the whole internet is HIGH, wider than a /16 is MEDIUM, every rule is counted for a
+# stale-entry review in one LOW inventory finding at the end. $Entries: @{ rule; range } each.
+$allowRules = 0; $allowByKind = [ordered]@{}; $allowPlanes = @{}
+function Add-AllowList([string]$Kind, [string]$Name, $Entries, [string]$Plane = 'azure', [string]$What = 'allows', [switch]$IgnorePrivate) {
+    $list = @($Entries | Where-Object { $_ })
+    if (-not $list.Count) { return }
+    $script:allowRules += $list.Count
+    $script:allowByKind[$Kind] = 1 + [int]$script:allowByKind[$Kind]
+    $script:allowPlanes[$Plane] = 1
+    $internet = @(); $broad = @()
+    foreach ($en in $list) {
+        $br = Get-IpBreadth (Get-IpRange $en.range) -IgnorePrivate:$IgnorePrivate
+        if ($br -eq 'internet') { $internet += "$($en.rule)" } elseif ($br -eq 'broad') { $broad += $(if ("$($en.rule)" -eq "$($en.range)") { "$($en.range)" } else { "$($en.rule) ($($en.range))" }) }
+    }
+    if ($internet.Count) { Add-Finding 'HIGH' 'Network' "$Kind '$Name' $What the entire internet (0.0.0.0-255.255.255.255): $($internet -join ', ')." $Plane }
+    if ($broad.Count) { Add-Finding 'MEDIUM' 'Network' "$Kind '$Name' $What range(s) wider than a /16: $($broad -join '; ')." $Plane }
+}
+
 # --- Expired app credentials ---
 # One unparseable record must never stop the run: the date helper returns $null and the
 # per-app try/catch skips, matching the fail-soft rule in CONTRIBUTING.
@@ -250,6 +270,23 @@ if ($dormantSet.Count -and $dvSysAdmins.Count) {
     if ($dvDormant.Count) { Add-Finding 'HIGH' 'Dormant admins' "$($dvDormant.Count) Dataverse System Administrator(s) have not signed in for 90+ days: $((@($dvDormant) | Select-Object -First 15) -join '; '). Remove the role unless it is a documented emergency-access account." 'dataverse' }
 }
 
+# --- Dataverse IP firewall (dvplus-<env>-ipfirewall.json) ---
+# Off, or on in audit-only mode (logs, never blocks), per environment; enforced ranges feed the
+# allowlist grading. It is a Managed Environments feature, so it is advice (LOW), not a defect.
+$dvFwOff = @(); $dvFwAudit = @()
+foreach ($f in @(Get-ChildItem $out -Filter 'dvplus-*-ipfirewall.json')) {
+    $envName = $f.BaseName -replace '^dvplus-' -replace '-ipfirewall$'
+    $o = Load $f.Name; $o = @($o)[0]
+    if (-not $o -or -not ($o.PSObject.Properties.Name -contains 'enableipbasedfirewallrule')) { continue }
+    $sku = $skuByHost["$envName".ToLower()]; $label = "$envName$(if($sku){" ($sku)"})"
+    if ($o.enableipbasedfirewallrule -ne $true) { $dvFwOff += $label; continue }
+    if ($o.enableipbasedfirewallruleinauditmode -eq $true) { $dvFwAudit += $label }
+    $ranges = @("$($o.allowediprangeforfirewall)" -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    Add-AllowList 'Dataverse environment' $envName @($ranges | ForEach-Object { @{ rule = $_; range = $_ } }) 'dataverse' 'IP firewall allows'
+}
+if ($dvFwOff.Count) { Add-Finding 'LOW' 'Network' "Dataverse IP firewall is off in $($dvFwOff.Count) environment(s): $($dvFwOff -join ', '). It limits Dataverse to your office and VPN ranges, which also stops a stolen token being replayed from anywhere else (Managed Environments feature; start in audit-only mode)." 'dataverse' }
+if ($dvFwAudit.Count) { Add-Finding 'LOW' 'Network' "Dataverse IP firewall is in audit-only mode (it logs, it never blocks) in: $($dvFwAudit -join ', ')." 'dataverse' }
+
 # --- Azure network ---
 Get-ChildItem $out -Filter 'arm-*-sql.json' | ForEach-Object {
     $items = Load $_.Name
@@ -258,17 +295,51 @@ Get-ChildItem $out -Filter 'arm-*-sql.json' | ForEach-Object {
         if (@($srv._firewallRules | Where-Object { $_.properties.startIpAddress -eq '0.0.0.0' -and $_.properties.endIpAddress -eq '0.0.0.0' }).Count) { Add-Finding 'HIGH' 'Network' "SQL server '$($srv.name)' allows all Azure IPs (0.0.0.0)." 'azure' }
     }
 }
-Get-ChildItem $out -Filter 'arm-*-nsgs.json' | ForEach-Object {
-    $items = Load $_.Name
+# NSG inbound Allow rules from '*', 'Internet' or 0.0.0.0/0, graded by port: remote-admin and
+# database ports (or every port) are HIGH; other ports (typically 80/443 on a web server) are
+# listed once as LOW. The plural fields (sourceAddressPrefixes, destinationPortRanges) count too.
+# Rules from a specific source range feed the allowlist grading (private ranges ignored).
+# String keys on purpose: an [ordered] dictionary indexed with an integer is read by position.
+$riskyPorts = [ordered]@{ '22' = 'SSH'; '3389' = 'RDP'; '5985' = 'WinRM'; '5986' = 'WinRM'; '23' = 'Telnet'; '21' = 'FTP'; '445' = 'SMB'; '135' = 'RPC'; '139' = 'NetBIOS'; '5900' = 'VNC'; '1433' = 'SQL Server'; '3306' = 'MySQL'; '5432' = 'PostgreSQL'; '1521' = 'Oracle'; '27017' = 'MongoDB'; '6379' = 'Redis' }
+function Get-RiskyPortHits($Ports) {
+    $hits = @()
+    foreach ($pr in @($Ports)) {
+        $t = "$pr".Trim()
+        if ($t -eq '*') { return @('all ports') }
+        if ($t -match '^(\d+)-(\d+)$') { $lo = [int]$Matches[1]; $hi = [int]$Matches[2] } elseif ($t -match '^\d+$') { $lo = [int]$t; $hi = $lo } else { continue }
+        if ($hi - $lo -ge 60000) { return @('all ports') }
+        foreach ($k in @($riskyPorts.Keys)) { $kp = [int]$k; if ($kp -ge $lo -and $kp -le $hi) { $hits += "$k ($($riskyPorts[$k]))" } }
+    }
+    return @($hits | Select-Object -Unique)
+}
+$nsgWebOpen = @()
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-nsgs.json')) {
+    $items = Load $f.Name
     foreach ($nsg in @($items | Where-Object { $_ })) {
-        foreach ($rule in $nsg.properties.securityRules) {
+        $attached = (@($nsg.properties.networkInterfaces | Where-Object { $_ }).Count + @($nsg.properties.subnets | Where-Object { $_ }).Count) -gt 0
+        $nsgNote = if ($attached) { '' } else { ' (this NSG is not attached to any subnet or network interface)' }
+        $allowEntries = @()
+        foreach ($rule in @($nsg.properties.securityRules | Where-Object { $_ })) {
             $p = $rule.properties
-            if ($p.access -eq 'Allow' -and $p.direction -eq 'Inbound' -and $p.destinationPortRange -in '3389','22','*' -and $p.sourceAddressPrefix -in '*','0.0.0.0/0','Internet') {
-                Add-Finding 'HIGH' 'Network' "NSG '$($nsg.name)' rule '$($rule.name)' opens port $($p.destinationPortRange) to the internet." 'azure'
+            if ("$($p.access)" -ne 'Allow' -or "$($p.direction)" -ne 'Inbound') { continue }
+            $srcs = @(@($p.sourceAddressPrefix) + @($p.sourceAddressPrefixes) | Where-Object { $_ } | ForEach-Object { "$_" })
+            $ports = @(@($p.destinationPortRange) + @($p.destinationPortRanges) | Where-Object { $_ } | ForEach-Object { "$_" })
+            $hits = @(Get-RiskyPortHits $ports)
+            $portText = if ($hits -contains 'all ports') { 'all ports' } else { "port(s) $($hits -join ', ')" }
+            if (@($srcs | Where-Object { $_ -in '*', 'Internet', 'Any', '0.0.0.0/0' }).Count) {
+                if ($hits.Count) { Add-Finding 'HIGH' 'Network' "NSG '$($nsg.name)' rule '$($rule.name)' opens $portText to the internet.$nsgNote" 'azure' }
+                else { $nsgWebOpen += "$($nsg.name)/$($rule.name) ($($ports -join ','))" }
+                continue
             }
+            if ($hits.Count -and @($srcs | Where-Object { $_ -eq 'AzureCloud' -or $_ -like 'AzureCloud.*' }).Count) {
+                Add-Finding 'MEDIUM' 'Network' "NSG '$($nsg.name)' rule '$($rule.name)' opens $portText to every Azure customer's address space (service tag AzureCloud).$nsgNote" 'azure'
+            }
+            foreach ($src in $srcs) { if ($null -ne (Get-IpRange $src)) { $allowEntries += @{ rule = "$($rule.name)"; range = $src } } }
         }
+        Add-AllowList 'NSG' $nsg.name $allowEntries 'azure' 'allows inbound from' -IgnorePrivate
     }
 }
+if ($nsgWebOpen.Count) { Add-Finding 'LOW' 'Network' "$($nsgWebOpen.Count) NSG rule(s) allow inbound internet traffic on other ports (for example web traffic): $((@($nsgWebOpen) | Select-Object -First 12) -join '; ')$(if($nsgWebOpen.Count -gt 12){" (+$($nsgWebOpen.Count - 12) more)"}). Confirm each one fronts a service that is meant to be public." 'azure' }
 Get-ChildItem $out -Filter 'arm-*-keyvaults.json' | ForEach-Object {
     $items = Load $_.Name
     foreach ($v in @($items | Where-Object { $_ })) {
@@ -290,36 +361,139 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-synapse.json')) {
 # 0.0.0.0-255.255.255.255 is the whole internet; a range wider than a /16 (65,536 addresses) is
 # flagged for review; 0.0.0.0-0.0.0.0 ("allow Azure services") has its own rule above. The total
 # feeds a stale-entry review of the raw rules.
-function Get-IpNumber($ip) {
-    $o = "$ip".Trim().Split('.')
-    if ($o.Count -ne 4) { return $null }
-    $n = [double]0
-    foreach ($x in $o) { $v = 0; if (-not [int]::TryParse($x, [ref]$v) -or $v -lt 0 -or $v -gt 255) { return $null }; $n = $n * 256 + $v }
-    return $n
-}
-$fwRuleN = 0; $fwResN = 0
 foreach ($kind in @(@('sql', 'SQL server'), @('synapse', 'Synapse workspace'))) {
     foreach ($f in @(Get-ChildItem $out -Filter "arm-*-$($kind[0]).json")) {
         $items = Load $f.Name
         foreach ($res in @($items | Where-Object { $_ })) {
-            $fwResN++
-            $internet = @(); $broad = @()
-            foreach ($r in @($res._firewallRules | Where-Object { $_ })) {
+            $entries = @(foreach ($r in @($res._firewallRules | Where-Object { $_ })) {
                 $p = if ($r.properties) { $r.properties } else { $r }
                 $sIp = "$($p.startIpAddress)"; $eIp = "$($p.endIpAddress)"
-                $a = Get-IpNumber $sIp; $b = Get-IpNumber $eIp
-                if ($null -eq $a -or $null -eq $b) { continue }
-                $fwRuleN++
-                if ($sIp -eq '0.0.0.0' -and $eIp -eq '0.0.0.0') { continue }
-                if ($a -eq 0 -and $b -eq 4294967295) { $internet += "$($r.name)" }
-                elseif (($b - $a + 1) -gt 65536) { $broad += "$($r.name) ($sIp-$eIp)" }
-            }
-            if ($internet.Count) { Add-Finding 'HIGH' 'Network' "$($kind[1]) '$($res.name)' firewall allows the entire internet (0.0.0.0-255.255.255.255): $($internet -join ', ')." 'azure' }
-            if ($broad.Count) { Add-Finding 'MEDIUM' 'Network' "$($kind[1]) '$($res.name)' firewall allows range(s) wider than a /16: $($broad -join '; ')." 'azure' }
+                if ($null -eq (Get-IpNumber $sIp) -or $null -eq (Get-IpNumber $eIp)) { continue }
+                @{ rule = "$($r.name)"; range = "$sIp-$eIp" }
+            })
+            Add-AllowList $kind[1] $res.name $entries 'azure' 'firewall allows'
         }
     }
 }
-if ($fwResN -gt 0) { Add-Finding 'LOW' 'Network' "Allowed-IP inventory: $fwRuleN firewall rule(s) across $fwResN SQL server(s) and Synapse workspace(s). Review every range for stale or over-broad entries (raw rules: output/arm-*-sql.json and arm-*-synapse.json, _firewallRules)." 'azure' }
+
+# --- VMs on the internet (arm-*-vms / nics / publicips / vnets) ---
+# A VM is on the internet when one of its network interfaces has a public IP. With no NSG on the
+# interface or on its subnet, every port the operating system listens on is reachable. A subnet
+# the run did not read is never assumed to be unprotected.
+$nicById = @{}; $pipById = @{}; $subnetNsg = @{}
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-nics.json')) { $x = Load $f.Name; foreach ($n in @($x | Where-Object { $_ -and $_.id })) { $nicById["$($n.id)".ToLower()] = $n } }
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-publicips.json')) { $x = Load $f.Name; foreach ($p in @($x | Where-Object { $_ -and $_.id })) { $pipById["$($p.id)".ToLower()] = $p } }
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-vnets.json')) { $x = Load $f.Name; foreach ($v in @($x | Where-Object { $_ })) { foreach ($sn in @($v.subnets | Where-Object { $_ -and $_.id })) { $subnetNsg["$($sn.id)".ToLower()] = "$($sn.nsg)" } } }
+$vmOnNet = @(); $vmBare = @()
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-vms.json')) {
+    $x = Load $f.Name
+    foreach ($vm in @($x | Where-Object { $_ })) {
+        $ips = @(); $bare = $false
+        foreach ($nid in @($vm.nics | Where-Object { $_ })) {
+            $nic = $nicById["$nid".ToLower()]
+            if (-not $nic) { continue }
+            foreach ($ipc in @($nic.ipConfigs | Where-Object { $_ -and $_.publicIp })) {
+                $pip = $pipById["$($ipc.publicIp)".ToLower()]
+                $ips += $(if ($pip -and $pip.ipAddress) { "$($pip.ipAddress)" } else { 'public IP' })
+                $subKey = "$($ipc.subnet)".ToLower()
+                if (-not $nic.nsg -and $subnetNsg.ContainsKey($subKey) -and -not $subnetNsg[$subKey]) { $bare = $true }
+            }
+        }
+        if ($ips.Count) { $vmOnNet += "$($vm.name) ($($ips -join ', '))"; if ($bare) { $vmBare += "$($vm.name) ($($ips -join ', '))" } }
+    }
+}
+if ($vmBare.Count) { Add-Finding 'HIGH' 'Network' "$($vmBare.Count) VM(s) have a public IP and no NSG on the network interface or its subnet, so every port the OS listens on is reachable from the internet: $($vmBare -join '; ')." 'azure' }
+if ($vmOnNet.Count) { Add-Finding 'LOW' 'Network' "$($vmOnNet.Count) VM(s) have a public IP address: $((@($vmOnNet) | Select-Object -First 15) -join '; ')$(if($vmOnNet.Count -gt 15){" (+$($vmOnNet.Count - 15) more)"}). Anything their NSG lets in is reachable from the internet; prefer Azure Bastion or a VPN for admin access." 'azure' }
+
+# --- Storage accounts (arm-*-storage.json) ---
+$stOpen = @(); $stAnon = @(); $stHttp = @(); $stTls = @(); $stKey = @()
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-storage.json')) {
+    $x = Load $f.Name
+    foreach ($a in @($x | Where-Object { $_ })) {
+        if ("$($a.publicNetworkAccess)" -ne 'Disabled' -and "$($a.defaultAction)" -eq 'Allow') { $stOpen += $a.name }
+        if ($a.allowBlobPublicAccess -eq $true) { $stAnon += $a.name }
+        if ($a.supportsHttpsTrafficOnly -eq $false) { $stHttp += $a.name }
+        if ("$($a.minimumTlsVersion)" -in 'TLS1_0', 'TLS1_1') { $stTls += "$($a.name) ($($a.minimumTlsVersion))" }
+        if ($a.allowSharedKeyAccess -ne $false) { $stKey += $a.name }
+        Add-AllowList 'Storage account' $a.name @(@($a.ipRules | Where-Object { $_ }) | ForEach-Object { @{ rule = "$_"; range = "$_" } }) 'azure' 'allows'
+    }
+}
+if ($stOpen.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stOpen.Count) storage account(s) accept connections from all networks (public network access on, default action Allow): $($stOpen -join ', '). Data access still needs a key or a token, but anyone can try; limit them to selected networks or private endpoints." 'azure' }
+if ($stAnon.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stAnon.Count) storage account(s) let anonymous (public) blob access be turned on for a container: $($stAnon -join ', '). Set 'Allow Blob anonymous access' to Disabled unless a container is meant to be public." 'azure' }
+if ($stHttp.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stHttp.Count) storage account(s) accept plain HTTP (secure transfer not required): $($stHttp -join ', ')." 'azure' }
+if ($stTls.Count) { Add-Finding 'LOW' 'Storage' "$($stTls.Count) storage account(s) are set to accept TLS below 1.2: $($stTls -join ', '). Set the minimum to TLS 1.2." 'azure' }
+if ($stKey.Count) { Add-Finding 'LOW' 'Storage' "$($stKey.Count) storage account(s) still accept shared-key authorization (account keys and SAS tokens), which bypasses Entra ID and leaves no per-user trail: $($stKey -join ', '). Turn it off where nothing depends on it." 'azure' }
+
+# --- App Service and Function Apps (arm-*-appservice.json) ---
+$apHttp = @(); $apTls = @(); $apFtp = @(); $apDebug = @(); $apOpen = @(); $fnOpen = @(); $fnLimited = @()
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-appservice.json')) {
+    $x = Load $f.Name
+    foreach ($site in @($x | Where-Object { $_ })) {
+        if ($site.httpsOnly -eq $false) { $apHttp += $site.name }
+        $c = $site.config
+        if (-not $c) { continue }
+        if ("$($c.minTlsVersion)" -in '1.0', '1.1') { $apTls += "$($site.name) ($($c.minTlsVersion))" }
+        if ("$($c.ftpsState)" -eq 'AllAllowed') { $apFtp += $site.name }
+        if ($c.remoteDebuggingEnabled -eq $true) { $apDebug += $site.name }
+        $pna = if ($site.publicNetworkAccess) { "$($site.publicNetworkAccess)" } else { "$($c.publicNetworkAccess)" }
+        $rules = @($c.ipSecurityRestrictions | Where-Object { $_ })
+        $limited = ("$($c.ipSecurityRestrictionsDefaultAction)" -eq 'Deny') -or (@($rules | Where-Object { "$($_.action)" -eq 'Allow' -and (("$($_.ipAddress)" -and "$($_.ipAddress)" -ne 'Any') -or $_.vnetSubnetResourceId) }).Count -gt 0)
+        $open = ($pna -ne 'Disabled') -and -not $limited
+        if ($open) { $apOpen += $site.name }
+        Add-AllowList 'App' $site.name @($rules | Where-Object { "$($_.action)" -eq 'Allow' -and "$($_.ipAddress)" -and "$($_.ipAddress)" -ne 'Any' -and "$($_.tag)" -ne 'ServiceTag' } | ForEach-Object { @{ rule = "$($_.name)"; range = "$($_.ipAddress)" } }) 'azure' 'allows'
+        foreach ($fn in @($site.functions | Where-Object { $_ -and $_.httpTrigger -and "$($_.authLevel)" -eq 'anonymous' -and $_.disabled -ne $true })) {
+            if ($open) { $fnOpen += "$($site.name)/$($fn.name)" } else { $fnLimited += "$($site.name)/$($fn.name)" }
+        }
+    }
+}
+if ($fnOpen.Count) { Add-Finding 'MEDIUM' 'App Service' "$($fnOpen.Count) HTTP function(s) need no key (authLevel anonymous) on app(s) that accept traffic from any IP: $((@($fnOpen) | Select-Object -First 12) -join ', '). Anyone who finds the URL can call them; use function keys, Entra ID authentication or access restrictions unless they are meant to be public." 'azure' }
+if ($fnLimited.Count) { Add-Finding 'LOW' 'App Service' "$($fnLimited.Count) HTTP function(s) need no key but sit behind access restrictions or private access: $((@($fnLimited) | Select-Object -First 12) -join ', ')." 'azure' }
+if ($apHttp.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apHttp.Count) app(s) do not force HTTPS (HTTPS Only off): $($apHttp -join ', ')." 'azure' }
+if ($apTls.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apTls.Count) app(s) accept TLS below 1.2: $($apTls -join ', ')." 'azure' }
+if ($apFtp.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apFtp.Count) app(s) accept plain FTP for deployments (FTP state All allowed): $($apFtp -join ', '). Set it to FTPS only or Disabled." 'azure' }
+if ($apDebug.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apDebug.Count) app(s) have remote debugging turned on: $($apDebug -join ', ')." 'azure' }
+if ($apOpen.Count) { Add-Finding 'LOW' 'App Service' "$($apOpen.Count) app(s) accept traffic from any IP address (no access restrictions): $((@($apOpen) | Select-Object -First 15) -join ', '). Fine for a public site; for internal APIs and Function Apps, add access restrictions or a private endpoint." 'azure' }
+
+# --- Logic Apps with HTTP triggers open to any caller (arm-*-logicapps.json) ---
+$laOpen = @()
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-logicapps.json')) {
+    $x = Load $f.Name
+    foreach ($la in @($x | Where-Object { $_ })) {
+        $http = @($la.triggers | Where-Object { $_ -and "$($_.type)" -eq 'Request' })
+        if ($http.Count -and "$($la.callers)" -eq 'any' -and $la.entraAuthPolicy -ne $true) { $laOpen += "$($la.name)$(if($la.state -and "$($la.state)" -ne 'Enabled'){" ($($la.state))"})" }
+        Add-AllowList 'Logic App' $la.name @(@($la.allowedCallerIps | Where-Object { $_ }) | ForEach-Object { @{ rule = "$_"; range = "$_" } }) 'azure' 'accepts calls from'
+    }
+}
+if ($laOpen.Count) { Add-Finding 'LOW' 'Integration' "$($laOpen.Count) Logic App(s) start from an HTTP request and accept calls from any IP: $((@($laOpen) | Select-Object -First 15) -join ', '). Each call still needs the trigger URL's signature, so anyone holding that URL can start the workflow; restrict caller IPs or add an Entra ID authorization policy." 'azure' }
+
+# --- Automation: retired Run As connections (arm-*-automation.json) ---
+$runAs = @()
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-automation.json')) {
+    $x = Load $f.Name
+    foreach ($acct in @($x | Where-Object { $_ })) {
+        $ra = @($acct.connections | Where-Object { $_ -and ("$($_.type)" -eq 'AzureServicePrincipal' -or "$($_.name)" -in 'AzureRunAsConnection', 'AzureClassicRunAsConnection') })
+        if ($ra.Count) { $runAs += "$($acct.name) ($((@($ra | ForEach-Object { "$($_.name)" })) -join ', '))" }
+    }
+}
+if ($runAs.Count) { Add-Finding 'MEDIUM' 'Service identities' "$($runAs.Count) Automation account(s) still hold a Run As (service principal certificate) connection, a feature Microsoft retired on 30 September 2023: $($runAs -join '; '). Its app registration can still carry Contributor on the subscription; move the runbooks to a managed identity, then delete that app registration and its role assignment." 'azure' }
+
+# --- API connections that sign in as a named account (arm-*-apiconnections.json) ---
+$apiNamed = @(); $apiDormant = @()
+foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-apiconnections.json')) {
+    $x = Load $f.Name
+    foreach ($c in @($x | Where-Object { $_ -and "$($_.authenticatedUser)" -match '@' })) {
+        $apiNamed += "$($c.name) ($($c.api)) as $($c.authenticatedUser)"
+        if ($dormantSet.ContainsKey("$($c.authenticatedUser)".ToLower())) { $apiDormant += "$($c.name) as $($c.authenticatedUser)" }
+    }
+}
+if ($apiDormant.Count) { Add-Finding 'MEDIUM' 'Service identities' "$($apiDormant.Count) API connection(s) sign in as an account with no successful sign-in for 90+ days: $($apiDormant -join '; '). Confirm the account is a managed service account, or move the connection to one." 'azure' }
+if ($apiNamed.Count) { Add-Finding 'LOW' 'Service identities' "$($apiNamed.Count) API connection(s) sign in as a named account: $((@($apiNamed) | Select-Object -First 12) -join '; ')$(if($apiNamed.Count -gt 12){" (+$($apiNamed.Count - 12) more)"}). Each runs with that account's access and breaks when the person leaves or the password changes; use a dedicated service account or a managed identity." 'azure' }
+
+# --- One inventory line for every allowlist read above ---
+if ($allowByKind.Count) {
+    $parts = @($allowByKind.Keys | ForEach-Object { "$($allowByKind[$_]) $($_)(s)" })
+    Add-Finding 'LOW' 'Network' "Allowed-IP inventory: $allowRules rule(s) across $($parts -join ', '). Review every range for stale or over-broad entries (raw rules in output/: arm-*-sql.json and arm-*-synapse.json _firewallRules, arm-*-storage.json, arm-*-nsgs.json, arm-*-appservice.json, arm-*-logicapps.json, dvplus-*-ipfirewall.json)." $(if($allowPlanes.ContainsKey('dataverse')){'mixed'}else{'azure'})
+}
 
 # --- Azure RBAC: Owner sprawl, and service principals holding Owner ---
 # Direct Owner / User Access Administrator grants at subscription scope (management-group

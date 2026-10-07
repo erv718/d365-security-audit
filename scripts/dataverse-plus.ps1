@@ -1,7 +1,7 @@
 # dataverse-plus.ps1 - extra read-only per-environment Dataverse checks.
 # Covers: broader org security settings (auditing + read-log auditing + user-access
-# auditing + plugin trace), email server profiles, queue + mailbox surface (server-side
-# sync), and field-level security usage (fieldpermissions).
+# auditing + plugin trace), the IP firewall, email server profiles, queue + mailbox surface
+# (server-side sync), and field-level security usage (fieldpermissions).
 #
 # Environments: the same resolved list as dataverse-sweep.ps1 (run-audit.ps1 -Environments >
 # scope.json > DATAVERSE_ENVIRONMENTS in .env, as URLs, environment ids or display names).
@@ -77,6 +77,16 @@ foreach ($url in $envs) {
                 $e = Get-ErrorText $_
                 Write-Warning "  [$safe] org-settings failed: $e"
                 Save-Json @{ error = $e } "dvplus-$safe-org-settings-ERROR.json" | Out-Null
+            }
+
+            # --- IP firewall (a Managed Environments feature) -----------------------
+            try {
+                $fwo = Invoke-Paged "$base$($script:DvReads.ipfirewall.Path)" $H
+                Save-Json $fwo "dvplus-$safe-ipfirewall.json" | Out-Null
+            } catch {
+                $e = Get-ErrorText $_
+                Write-Warning "  [$safe] IP firewall settings failed: $e"
+                Save-Json @{ error = $e } "dvplus-$safe-ipfirewall-ERROR.json" | Out-Null
             }
 
             # --- Email server profiles -------------------------------------------
