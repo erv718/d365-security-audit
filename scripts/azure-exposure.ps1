@@ -38,14 +38,15 @@ function N($x) { if ($null -eq $x) { return '?' }; return @($x).Count }
 
 $scope = Read-ScopeEffective
 try { $allSubs = @(Get-Arm "$Arm/subscriptions?api-version=2022-12-01") }
-catch { Write-Warning "Could not list subscriptions: $($_.Exception.Message)"; return }
+catch { $why = Get-ErrorText $_; Write-Warning "Could not list subscriptions: $why"; Save-Json @{ error = $why } 'arm-subscriptions-ERROR.json' | Out-Null; return }
 $subs = @(Select-ScopedSubscriptions $scope $allSubs)
 Write-Host "Azure exposure: auditing $($subs.Count) of $($allSubs.Count) visible subscription(s)" -ForegroundColor Cyan
 $rgSelected = @(Get-ScopeItems $scope.azure.resourceGroups)
+$safeNames = Get-SubscriptionSafeNames $allSubs
 
 foreach ($s in $subs) {
     $sid = $s.subscriptionId; $base = "$Arm/subscriptions/$sid"
-    $safe = ($s.displayName -replace '[^A-Za-z0-9]','_')
+    $safe = $safeNames["$sid"]
     Write-Host "  $($s.displayName)" -ForegroundColor Cyan
 
     $groups = $null
@@ -118,7 +119,7 @@ foreach ($s in $subs) {
             foreach ($site in @(Select-ScopedResources $scope 'appservice' (Get-ArmScoped $base $groups 'Microsoft.Web/sites?api-version=2023-12-01'))) {
                 $p = $site.properties
                 $o = [ordered]@{ id = $site.id; name = $site.name; kind = "$($site.kind)"; location = $site.location; state = $p.state; httpsOnly = $p.httpsOnly
-                    publicNetworkAccess = $p.publicNetworkAccess; clientCertEnabled = $p.clientCertEnabled; vnetSubnet = $p.virtualNetworkSubnetId; config = $null; functions = $null; errors = @() }
+                    publicNetworkAccess = $p.publicNetworkAccess; clientCertEnabled = $p.clientCertEnabled; vnetSubnet = $p.virtualNetworkSubnetId; config = $null; easyAuth = $null; functions = $null; errors = @() }
                 try {
                     $c = (Invoke-RestMethod -Uri "$Arm$($site.id)/config/web?api-version=2023-12-01" -Headers $H).properties
                     $o.config = [pscustomobject]@{
@@ -128,6 +129,11 @@ foreach ($s in $subs) {
                         scmIpSecurityRestrictionsUseMain = $c.scmIpSecurityRestrictionsUseMain; scmRestrictionCount = @($c.scmIpSecurityRestrictions | Where-Object { $_ }).Count
                     }
                 } catch { $o.errors += "config: $(Get-ErrorText $_)" }
+                # App Service authentication (Easy Auth): on, and not letting anonymous callers through.
+                try {
+                    $au = (Invoke-RestMethod -Uri "$Arm$($site.id)/config/authsettingsV2?api-version=2023-12-01" -Headers $H).properties
+                    $o.easyAuth = [bool]($au.platform.enabled -eq $true -and "$($au.globalValidation.unauthenticatedClientAction)" -ne 'AllowAnonymous')
+                } catch { $o.errors += "authsettings: $(Get-ErrorText $_)" }
                 if ($o.kind -match 'functionapp') {
                     try {
                         $o.functions = @(@(Get-Arm "$Arm$($site.id)/functions?api-version=2023-12-01") | ForEach-Object {

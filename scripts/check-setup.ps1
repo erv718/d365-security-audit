@@ -93,8 +93,13 @@ $probes = @(
     @{ perm = 'DeviceManagementManagedDevices.Read.All'; url = 'https://graph.microsoft.com/beta/deviceManagement/managedDeviceOverview' }
 )
 foreach ($p in $probes) {
-    $ok = $true
-    try { Invoke-RestMethod -Uri $p.url -Headers $H | Out-Null } catch { $ok = $false }
+    $ok = $true; $why = ''
+    try { Invoke-RestMethod -Uri $p.url -Headers $H | Out-Null } catch { $ok = $false; $why = Get-ErrorText $_ }
+    if (-not $ok -and $why -match 'not applicable to target tenant') {
+        # The permission is fine; the tenant has no Intune. Checks 1.5 and 1.6 read Gap from that.
+        Note "Graph permission $($p.perm) is held, but Intune is not provisioned in this tenant (checks 1.5 and 1.6 read Gap)"
+        continue
+    }
     $fix = @(
         "Entra portal > App registrations > your app > API permissions > Add a permission >",
         "Microsoft Graph > Application permissions > add '$($p.perm)',",
@@ -224,7 +229,8 @@ elseif (@(Get-ScopeItems $scope.powerPlatform.environments).Count -gt 0) {
 # --- 7. Dataverse: is the app an Application User in each environment in scope? -------
 # With a selection, ids and display names resolve through the catalog just read; without one,
 # both Dataverse sweeps cover every environment that has a Dataverse URL.
-if ($bapOk) { $envRes = Resolve-ScopeEnvironments $scope -Catalog $bapEnvs } else { $envRes = Resolve-ScopeEnvironments $scope }
+# Without the admin API there is no discovery this run; an earlier run's URL list is not used.
+if ($bapOk) { $envRes = Resolve-ScopeEnvironments $scope -Catalog $bapEnvs } else { $envRes = Resolve-ScopeEnvironments $scope -Catalog @() }
 Set-ScopeField $scope.powerPlatform 'discoveredEnvironments' $envRes.discovered
 Set-ScopeField $scope.powerPlatform 'resolved' @($envRes.environments)
 Set-ScopeField $scope.powerPlatform 'unresolved' @($envRes.unresolved)
@@ -234,12 +240,13 @@ if ($envUrls.Count -eq 0) {
 } else {
     foreach ($envUrl in $envUrls) {
         $base = "$($envUrl.TrimEnd('/'))/api/data/v9.2/"
-        $who = $null; $Hd = $null
+        $who = $null; $Hd = $null; $whoWhy = ''
         $t = Get-Token $envUrl
         if ($t) {
             $Hd = @{ Authorization = "Bearer $t"; Accept = 'application/json'; 'OData-Version' = '4.0' }
-            try { $who = Invoke-RestMethod -Uri "${base}WhoAmI" -Headers $Hd } catch { $who = $null }
+            try { $who = Invoke-RestMethod -Uri "${base}WhoAmI" -Headers $Hd } catch { $who = $null; $whoWhy = Get-ErrorText $_ }
         }
+        foreach ($re in @($scope.powerPlatform.resolved)) { if ($re -and "$($re.url)".TrimEnd('/') -eq $envUrl.TrimEnd('/')) { Set-ScopeField $re 'reachable' ($null -ne $who); if ($null -eq $who) { Set-ScopeField $re 'reason' $(if ($t) { "WhoAmI failed: $whoWhy" } else { 'no token for this environment' }) } } }
         Show ($null -ne $who) "Dataverse: $envUrl" @(
             'The app is not an Application User in this environment (or has no role).',
             'Power Platform admin center > Environments > (this environment) > Settings >',
@@ -320,6 +327,7 @@ if ($script:fails -eq 0) {
 } else {
     Write-Host "Setup incomplete: $($script:fails) item(s) need attention (fixes above)." -ForegroundColor Yellow
     Write-Host 'The audit will still run and will skip whatever it cannot read.' -ForegroundColor Yellow
+    Write-Host 'Stuck? docs/troubleshooting.md shows how to get help without sharing tenant data.' -ForegroundColor DarkGray
 }
 Write-Host ''
 return $true

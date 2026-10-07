@@ -42,11 +42,12 @@ foreach ($f in $invFiles) {
 }
 
 # --- Your export(s) ------------------------------------------------------------------
-$paths = @(); foreach ($x in $FromInventory) { if (Test-Path $x -PathType Leaf) { $paths += $x } else { $paths += @(ConvertTo-ScopeList $x) } }
+$paths = @(); foreach ($x in $FromInventory) { if (Test-Path -LiteralPath $x -PathType Leaf) { $paths += $x } else { $paths += @(ConvertTo-ScopeList $x) } }
 $mine = @{}; $rowsTotal = 0; $sources = @()
 foreach ($p in $paths) {
-    if (-not (Test-Path $p -PathType Leaf)) { Write-Warning "Inventory file not found: $p"; continue }
-    $csv = @(Import-Csv $p)
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { Write-Warning "Inventory file not found: $p"; continue }
+    # A locked file (still open in Excel) or a malformed header must not stop the run.
+    try { $csv = @(Import-Csv -LiteralPath $p) } catch { Write-Warning "Inventory file could not be read, skipped: $p ($($_.Exception.Message))"; continue }
     $sources += "$(Split-Path $p -Leaf) ($($csv.Count) rows)"
     if ($csv.Count -eq 0) { continue }
     $cols = @($csv[0].PSObject.Properties.Name)

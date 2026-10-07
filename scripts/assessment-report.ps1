@@ -14,6 +14,18 @@ $out = Get-OutDir
 # The scope this run covered (output/scope-effective.json, written by check-setup.ps1). On a
 # scoped run the report says PARTIAL under its title and every row says which slice it describes.
 $scope = Read-ScopeEffective
+# Evidence files older than this run's setup check come from an earlier run (a -Skip switch, a
+# sweep that stopped early, or a scope that no longer covers them). They are still read, and
+# the report says so, because a verdict from last month must never look like today's.
+$staleFiles = @()
+try {
+    $runStart = [datetime]::Parse("$($scope.resolvedAt)", [cultureinfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)
+    foreach ($f in @(Get-ChildItem $out -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        if ($f.Name -in 'scope-effective.json', 'assessment-report.json', 'FINDINGS-summary.json') { continue }
+        if ($f.LastWriteTimeUtc -lt $runStart.AddMinutes(-2)) { $staleFiles += $f.Name }
+    }
+} catch {}
+if ($staleFiles.Count) { Write-Warning "assessment: $($staleFiles.Count) evidence file(s) are older than this run's setup check and come from an earlier run: $(($staleFiles | Select-Object -First 8) -join ', ')$(if($staleFiles.Count -gt 8){' ...'})" }
 
 # LJ: load one evidence file. Missing, empty or unparseable = $null (the check reads "Not
 # checked"); a JSON [] stays an empty array (the check reads its zero verdict). -NoEnumerate
@@ -118,7 +130,7 @@ foreach ($f in $rolesFiles) { $roles = LJ $f.Name; if ($null -eq $roles) { conti
 $ca = LJ 'ca-policies.json'
 $caTotal     = Cnt $ca
 $caOn        = Cnt ($ca | Where-Object { $_.state -eq 'enabled' })
-$caMfa       = Cnt ($ca | Where-Object { $_.state -eq 'enabled' -and $_.grantControls.builtInControls -contains 'mfa' })
+$caMfa       = Cnt ($ca | Where-Object { $_.state -eq 'enabled' -and ($_.grantControls.builtInControls -contains 'mfa' -or $null -ne $_.grantControls.authenticationStrength) })
 $caCompliant = Cnt ($ca | Where-Object { $_.state -eq 'enabled' -and $_.grantControls.builtInControls -contains 'compliantDevice' })
 
 $pimElig   = LJ 'pim-eligible.json'
@@ -169,7 +181,7 @@ foreach ($f in $sentinelFiles) { $s = LJ $f.Name; if ($null -eq $s) { continue }
 $logicFiles = @(LFiles 'arm-*-logicapps.json'); $logicReadN = 0; $logicApps = 0
 foreach ($f in $logicFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $logicReadN++; $logicApps += Cnt $x }
 $emailFiles = @(LFiles 'dvplus-*-emailprofiles.json'); $emailReadN = 0; $emailProfiles = 0
-foreach ($f in $emailFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $emailReadN++; $emailProfiles += Cnt $x }
+foreach ($f in $emailFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $emailReadN++; $emailProfiles += Cnt ($x | Where-Object { $_ -and ($null -eq $_.statecode -or "$($_.statecode)" -eq '0') }) }   # active profiles only
 $mailboxFiles = @(LFiles 'dvplus-*-mailboxes.json'); $mailboxN = 0
 foreach ($f in $mailboxFiles) { $m = First (LJ $f.Name); if ($m -and $null -ne $m.'@odata.count') { $mailboxN += [int]$m.'@odata.count' } elseif ($m) { $mailboxN += Cnt $m.sample } }
 $queueFiles = @(LFiles 'dvplus-*-queues.json'); $queueN = 0
@@ -180,10 +192,14 @@ $fpFiles = @(LFiles 'dvplus-*-fieldpermissions.json') + @(LFiles 'dv-*-fieldsec.
 foreach ($f in $fpFiles) {
     $x = LJ $f.Name
     if ($null -eq $x) { continue }
-    $fpEnvs[($f.BaseName -replace '^dv(plus)?-' -replace '-(fieldpermissions|fieldsec)$').ToLower()] = 1
-    if ($f.Name -like 'dv-*-fieldsec.json') { $fieldPerms += Cnt ($x | Where-Object { $_ -and "$($_.name)" -ne 'System Administrator' }) } else { $fieldPerms += Cnt $x }
+    $envKey = ($f.BaseName -replace '^dv(plus)?-' -replace '-(fieldpermissions|fieldsec)$').ToLower()
+    if (-not $fpEnvs.ContainsKey($envKey)) { $fpEnvs[$envKey] = @{} }
+    if ($f.Name -like 'dv-*-fieldsec.json') { $fpEnvs[$envKey]['fieldsec'] = 1; $fieldPerms += Cnt ($x | Where-Object { $_ -and "$($_.name)" -ne 'System Administrator' }) }
+    else { $fpEnvs[$envKey]['fieldpermissions'] = 1; $fieldPerms += Cnt $x }
 }
 $fpReadN = $fpEnvs.Count
+# An environment with only one of the two reads (the other left an ERROR file) cannot prove a Gap.
+$fpHalf = @($fpEnvs.Keys | Where-Object { $fpEnvs[$_].Count -lt 2 } | Sort-Object)
 
 # Table-level auditing on the key security tables (dv-<env>-entities.json, basic Dataverse sweep).
 $keyTables = @('account', 'contact', 'systemuser', 'role', 'team', 'businessunit', 'fieldsecurityprofile')
@@ -325,7 +341,7 @@ $siteWeak = @($siteAll | Where-Object { $_.httpsOnly -eq $false -or ($_.config -
 $fnApps = @($siteAll | Where-Object { "$($_.kind)" -match 'functionapp' }).Count
 $anonFn = 0; foreach ($sx in $siteAll) { $anonFn += @($sx.functions | Where-Object { $_ -and $_.httpTrigger -and "$($_.authLevel)" -eq 'anonymous' -and $_.disabled -ne $true }).Count }
 $la = LoadAll 'arm-*-logicapps.json'
-$laHttpOpen = @($la.items | Where-Object { @($_.triggers | Where-Object { $_ -and "$($_.type)" -eq 'Request' }).Count -and "$($_.callers)" -eq 'any' -and $_.entraAuthPolicy -ne $true }).Count
+$laHttpOpen = @($la.items | Where-Object { @($_.triggers | Where-Object { $_ -and "$($_.type)" -eq 'Request' }).Count -and "$($_.callers)" -eq 'any' -and -not ($_.entraAuthPolicy -eq $true -and $_.sasDisabled -eq $true) }).Count
 $conn = LoadAll 'arm-*-apiconnections.json'; $connNamed = @($conn.items | Where-Object { "$($_.authenticatedUser)" -match '@' }).Count
 $aa = LoadAll 'arm-*-automation.json'
 $runAsN = @($aa.items | Where-Object { @($_.connections | Where-Object { $_ -and ("$($_.type)" -eq 'AzureServicePrincipal' -or "$($_.name)" -in 'AzureRunAsConnection', 'AzureClassicRunAsConnection') }).Count }).Count
@@ -373,10 +389,10 @@ if (Have $ppEnv) {
 if (-not $p11) { $p11 = 'tenant' }
 Chk '1.1' '1 Entra ID' 'Entra integrated with D365' $s11 $e11 $p11
 
-if ($rolesEnvN -eq 0 -and $usersReadN -eq 0) { $s12 = 'Not checked'; $e12 = 'Security roles and role holders not read: set DATAVERSE_ENVIRONMENTS in .env (or let the Power Platform sweep discover the environments) so the basic Dataverse sweep pulls them, and give the app user Read on Security Role and User.' }
+if ($rolesEnvN -eq 0 -and $usersReadN -eq 0) { $s12 = 'Not checked'; $e12 = 'Security roles and role holders not read: no environment in this run was readable as an Application User with Read on Security Role and User (the setup check names the environment and the missing table).' }
 else {
     if ($rolesEnvN -eq 0) { $s12 = 'Partial'; $e12 = 'Security role definitions not read.' }
-    elseif ($customRoles -eq 0) { $s12 = 'Gap'; $e12 = "0 custom security roles across $rolesEnvN environment(s) read - only built-in roles are ever assigned." }
+    elseif ($customRoles -eq 0) { $s12 = 'Partial'; $e12 = "No unmanaged (customer-authored) security role in $rolesEnvN environment(s) read; roles delivered in managed solutions are not told apart from built-in ones by this read, so whether a least-privilege role exists needs a role review." }
     else { $s12 = 'Partial'; $e12 = "$customRoles custom security role(s) across $rolesEnvN environment(s) read; whether they are least-privilege needs a role review." }
     if ($saBusy.Count) { $s12 = 'Gap' }
     $e12 += $saNote
@@ -394,7 +410,7 @@ Chk '1.3' '1 Entra ID' 'Security group restricts environment access' $sgStatus $
 
 if (-not (Have $ca)) { $s14 = 'Not checked'; $e14 = 'Conditional Access policies not read (needs Policy.Read.All with admin consent).' }
 elseif ($caMfa -eq 0 -and $sdOn) { $s14 = 'Partial'; $e14 = "Security defaults are ON (baseline MFA for everyone); $caTotal Conditional Access policies, none enforcing MFA (CA needs Entra ID P1)." }
-elseif ($caTotal -eq 0) { $s14 = 'Gap'; $e14 = 'No Conditional Access policies exist and security defaults are off.' }
+elseif ($caTotal -eq 0) { $s14 = 'Gap'; $e14 = "No Conditional Access policies exist$(if(Have $secDef){' and security defaults are off'}else{' (security defaults not read)'})." }
 elseif ($caMfa -eq 0) { $s14 = 'Gap'; $e14 = "$caTotal policies, $caOn enabled, none enforce MFA." }
 else { $s14 = 'Aligned'; $e14 = "$caTotal policies, $caOn enabled, $caMfa enforce MFA." }
 if ((Have $secDef) -and $s14 -ne 'Partial') { $e14 += " Security defaults: $(if($sdOn){'ON'}else{'off'})." }
@@ -417,6 +433,7 @@ Chk '1.6' '1 Entra ID' 'Device compliance enforced for D365' $s16 $e16
 
 # Domain 2 - Authentication
 if (-not (Have $apps)) { $s21 = 'Not checked'; $e21 = 'App registrations not read (needs Application.Read.All with admin consent).' }
+elseif (-not (Have $findings)) { $s21 = 'Not checked'; $e21 = 'The findings summary (FINDINGS-summary.json) was not produced, so the high-privilege and service-identity counts this check relies on are missing; run scripts/analyze.ps1 first.' }
 else {
     $notRead21 = @()
     if (-not (Have $asnGraph)) { $notRead21 += 'Graph app-role assignments' }
@@ -497,13 +514,14 @@ Chk '4.3' '4 Auditing' 'SIEM / monitoring over Power Platform' $s43 ($e43 + $log
 Chk '4.4' '4 Auditing' 'Purview / Sentinel integration' $(if($sentinelOn){'Partial'}else{'Not checked'}) $(if($sentinelOn){'Sentinel state read; Purview audit to confirm: purview.microsoft.com > Solutions > Audit.'}else{'Sentinel not found or not read; Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit.'}) 'azure'
 
 # Domain 5 - Security settings
-if ($rolesEnvN -eq 0) { $s51 = 'Not checked'; $e51 = 'Security roles not read: set DATAVERSE_ENVIRONMENTS in .env so the basic Dataverse sweep pulls roles.' }
-elseif ($customRoles -eq 0) { $s51 = 'Gap'; $e51 = "0 custom roles in $rolesEnvN environment(s) read - only built-in roles available to assign." }
+if ($rolesEnvN -eq 0) { $s51 = 'Not checked'; $e51 = 'Security roles not read: no environment in this run was readable as an Application User with Read on Security Role (the setup check names the environment and the missing table).' }
+elseif ($customRoles -eq 0) { $s51 = 'Partial'; $e51 = "No unmanaged (customer-authored) role in $rolesEnvN environment(s) read; roles from managed solutions are not told apart from built-in ones by this read; privilege depth per role to review." }
 else { $s51 = 'Partial'; $e51 = "$customRoles custom role(s) in $rolesEnvN environment(s) read; privilege depth per role to review." }
 $e51 += $saNote
 Chk '5.1' '5 Security settings' 'Security role design' $s51 $e51 'dataverse'
 if ($fpReadN -eq 0) { $s52 = 'Not checked'; $e52 = 'Field security profiles/permissions not read (no environment reachable as an Application User).' }
 elseif ($fieldPerms -gt 0) { $s52 = 'Partial'; $e52 = "$fieldPerms field permission(s) or custom field security profile(s) in $($fpReadN) environment(s) read; business-unit and record-level design to review." }
+elseif ($fpHalf.Count) { $s52 = 'Not checked'; $e52 = "No column-level security seen, but only one of the two reads (field security profiles, field permissions) succeeded in: $($fpHalf -join ', '); the other pull failed, so this is not confirmed." }
 else { $s52 = 'Gap'; $e52 = "No field permissions and no field security profile beyond the built-in System Administrator one in $($fpReadN) environment(s) read - no column-level security in use." }
 Chk '5.2' '5 Security settings' 'Field-level / record / BU security' $s52 $e52 'dataverse'
 $dlpN = Cnt $dlp
@@ -534,6 +552,7 @@ Chk '7.1' '7 Incident response' 'Incident response plan' 'MANUAL' 'A document/pr
 $defPath = 'Azure portal > Microsoft Defender for Cloud > Environment settings > (subscription) > Defender plans'
 if ($defReadN -eq 0) { $s72 = 'MANUAL'; $e72 = "Defender for Cloud plans not read (needs Reader on the subscriptions). Confirm at $defPath; the pen-test program itself is a process to confirm manually." }
 elseif ($defStd.Count -gt 0) { $s72 = 'Partial'; $e72 = "Defender for Cloud plans on Standard tier in $($defReadN) subscription(s) read: $($defStd -join ', ')$(if($defFree.Count){"; still Free: $($defFree -join ', ')"})$(if($defOther.Count){"; other Standard entries not counted: $($defOther -join ', ')"}). Partial proxy only - vulnerability scanning covers those workloads; a pen-test program is a manual confirmation." }
+elseif ($defFree.Count -eq 0 -and $defOther.Count -eq 0) { $s72 = 'MANUAL'; $e72 = "Defender for Cloud has never been enabled in the $($defReadN) subscription(s) read (no plans exist), so there is no paid vulnerability scanning. Enable at $defPath; confirm the pen-test program manually." }
 else { $s72 = 'MANUAL'; $e72 = "All $($defFree.Count) documented Defender for Cloud plans are on the Free tier in $($defReadN) subscription(s) read$(if($defOther.Count){" (Standard entries not counted: $($defOther -join ', '))"}) - no paid vulnerability scanning. Enable at $defPath; confirm the pen-test program manually." }
 Chk '7.2' '7 Incident response' 'Vulnerability scanning / pen testing' $s72 $e72 'azure'
 
@@ -582,6 +601,10 @@ $md = @()
 $md += "# D365 / Power Platform Security Assessment"
 $md += ""
 $md += "**$banner**"
+if ($staleFiles.Count) {
+    $md += ""
+    $md += "**Evidence not refreshed by this run:** $($staleFiles.Count) file(s) are older than this run's setup check and come from an earlier run (a -Skip switch, a sweep that stopped early, or a scope that no longer covers them): $($staleFiles -join ', '). Their verdicts describe that earlier state."
+}
 if ($scope.partial) {
     $md += ""
     $md += "Verdicts below describe the selected scope only. Rows marked [tenant-wide] cover the whole tenant regardless of scope; a selection the app could not see reads Not checked. Do not present this report as a complete assessment."

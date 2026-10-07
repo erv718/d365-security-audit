@@ -3,7 +3,7 @@
 # when AI_ANALYSIS=api is explicitly set in .env. It reads ./output; it never touches the tenant.
 #
 # Modes (AI_ANALYSIS in .env):
-#   off   (default) - do nothing.
+#   off   (default) - do nothing. Read from .env only: a process environment variable never turns it on.
 #   local - write output/ai-analysis-prompt.md (findings + a ready prompt) for you to hand to
 #           your own Claude Code / Kimi / Codex session. No network call, zero egress.
 #   api   - POST the scoped findings to the OpenAI-compatible endpoint in .env and write
@@ -11,11 +11,12 @@
 # Scope (AI_ANALYSIS_SCOPE): redacted (default) | named | full.
 
 . (Join-Path $PSScriptRoot '_common.ps1')
+. (Join-Path $PSScriptRoot '_redact.ps1')
 
-$mode = "$(Get-Conf 'AI_ANALYSIS')".ToLower().Trim()
+$mode = "$(Get-DotEnvValue 'AI_ANALYSIS')".ToLower().Trim()   # .env only, never the process environment
 if ($mode -ne 'local' -and $mode -ne 'api') { return }   # off / unset: nothing to do
 
-$scope = "$(Get-Conf 'AI_ANALYSIS_SCOPE')".ToLower().Trim(); if (-not $scope) { $scope = 'redacted' }
+$scope = "$(Get-DotEnvValue 'AI_ANALYSIS_SCOPE')".ToLower().Trim(); if (-not $scope) { $scope = 'redacted' }
 if ($scope -notin 'redacted', 'named', 'full') { Write-Warning "ai-analysis: unknown AI_ANALYSIS_SCOPE '$scope'; using 'redacted'."; $scope = 'redacted' }
 $out = Get-OutDir
 
@@ -48,10 +49,11 @@ if ($scope -eq 'full') {
 }
 
 # --- redaction (default scope) ---
-# Best effort over the report and findings text: emails, IPs, GUIDs, tenant domains, quoted
-# names, and the name lists the report prints unquoted (environments without a security group,
-# SQL servers on old TLS, guest home domains, apps holding risky permissions, and the
-# [environment] prefix on the Dataverse findings).
+# Two layers. The patterns below mask emails, IPs, GUIDs, tenant domains, quoted names and the
+# name lists the report prints unquoted. Then Protect-Names (_redact.ps1) replaces every name
+# the evidence files themselves carry (environments, subscriptions, resource groups, resources,
+# apps, application users, custom roles, solutions, guest domains) with a typed placeholder, so a
+# finding worded in a new way still comes out masked. Best effort: read the file before sharing.
 function Protect-Text([string]$t) {
     $ml = [System.Text.RegularExpressions.RegexOptions]::Multiline
     $t = [regex]::Replace($t, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email>')
@@ -66,7 +68,7 @@ function Protect-Text([string]$t) {
     $t = [regex]::Replace($t, '\[[^\]\r\n]{1,80}\] (Dataverse auditing is OFF|Zero custom security roles)', '[<name>] $1')
     return $t
 }
-if ($scope -eq 'redacted') { $material = Protect-Text $material }
+if ($scope -eq 'redacted') { $material = Protect-Text (Protect-Names $material (New-RedactionMap $out)) }
 
 $prompt = @'
 You are a Microsoft cloud security advisor. Below is the output of a READ-ONLY audit of a
@@ -98,7 +100,7 @@ if ($mode -eq 'local') {
 }
 
 # --- api mode: send to the configured OpenAI-compatible endpoint ---
-$url = Get-Conf 'AI_API_URL'; $key = Get-Conf 'AI_API_KEY'; $model = Get-Conf 'AI_MODEL'
+$url = Get-DotEnvValue 'AI_API_URL'; $key = Get-DotEnvValue 'AI_API_KEY'; $model = Get-DotEnvValue 'AI_MODEL'
 if (-not ($url -and $key -and $model)) {
     Write-Warning "ai-analysis: AI_ANALYSIS=api needs AI_API_URL, AI_API_KEY and AI_MODEL in .env. Skipping."
     return
@@ -107,7 +109,7 @@ $apiHost = try { ([Uri]$url).Host } catch { $url }
 Write-Host ""
 Write-Host "AI analysis (api): sending the '$scope' findings to $apiHost." -ForegroundColor Yellow
 Write-Host "This is the ONLY thing the tool sends off-machine, and only because AI_ANALYSIS=api is set." -ForegroundColor Yellow
-$maxTok = "$(Get-Conf 'AI_MAX_TOKENS')".Trim(); if ($maxTok -notmatch '^\d+$') { $maxTok = '4000' }
+$maxTok = "$(Get-DotEnvValue 'AI_MAX_TOKENS')".Trim(); if ($maxTok -notmatch '^\d+$') { $maxTok = '4000' }
 $body = @{ model = $model; max_tokens = [int]$maxTok; messages = @(
     @{ role = 'system'; content = $prompt }, @{ role = 'user'; content = $material }
 ) } | ConvertTo-Json -Depth 8

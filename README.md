@@ -11,7 +11,7 @@ This runs entirely under your control. It reads your own tenant and writes the r
 - **No telemetry, no phone-home.** The only calls it makes are to your own Microsoft endpoints (Graph, Dataverse, Azure). There is no analytics, and it contacts no third party, including us.
 - **Your data stays local.** All output lands in `output/`, which is git-ignored. You decide what happens to it.
 - **Read-only.** It never writes to your tenant: GET reads only, apart from two documented read-only POSTs (the token sign-in request, and Power Platform's listTenantSettings, which returns settings).
-- **Auditable.** It is a few hundred lines of PowerShell under MIT. Read every line before you run it, or have your security team do it.
+- **Auditable.** It is plain PowerShell under MIT, about 4,000 lines across a dozen scripts. Read every line before you run it, or have your security team do it.
 - **Least privilege.** It needs only the seven read-only Graph scopes in docs/permissions.md, and it signs in only as the app registration you create - never as a person, never with your account.
 - **One explicit exception.** The optional AI analysis (`AI_ANALYSIS=api` in `.env`, OFF by default) sends the scoped findings summary to an AI endpoint you choose. The default (`off`) and `local` mode send nothing. The default `redacted` scope masks emails, IPs, GUIDs, tenant domains and the names the report prints, on a best-effort pattern basis; `named` and `full` send more.
 
@@ -33,7 +33,7 @@ This tool reads the configuration directly, so the findings are based on the liv
 - Conditional Access policies (how many exist, how many are enabled, whether any enforce MFA or a compliant device), security defaults, the authentication methods policy, named locations
 - Intune device compliance policies and the managed-device overview
 - Guest accounts: tenant-wide count and concentration by home domain
-- A sign-in sample: legacy/basic-auth protocols that bypass MFA (IMAP, POP, SMTP, Exchange ActiveSync, "other clients"), and MFA that a federated IdP performs but Entra does not record
+- A sign-in sample: legacy/basic-auth protocols that bypass MFA (IMAP, POP, SMTP, Exchange ActiveSync, "other clients"); MFA performed by a federated IdP is outside what Entra records, and the report says so rather than claiming it
 
 **Power Platform (admin API; optional, see [docs/permissions.md](docs/permissions.md) section 5)**
 - Every environment: type, region, whether it has a Dataverse database, whether a security group restricts access, whether it is a Managed Environment
@@ -84,9 +84,11 @@ Copy-Item .env.example .env
 ./run-audit.ps1
 ```
 
-The audit runs entirely on that one read-only credential. **There is no interactive
-sign-in of any kind**: the tool never signs in as a person, never opens a browser
-prompt, and never shows a device code. On every run it first checks your app's setup
+The audit runs entirely on that one read-only credential. **The audit never signs in
+interactively**: it never signs in as a person, never opens a browser prompt, and never
+shows a device code. (One optional helper, `scripts/new-scope.ps1 -DeviceCode`, can sign in
+a person to write a local scope file; the audit itself never calls it.) On every run it
+first checks your app's setup
 and prints the exact fix for anything missing (you can also run the check alone with
 `pwsh ./scripts/check-setup.ps1`): a Graph permission without consent, a Dataverse table the
 app's role cannot read, or an API permission the app holds but the audit never uses. If `.env`
@@ -98,6 +100,13 @@ Output lands in `./output` (git-ignored):
 - `assessment-report.md` - the pulls mapped to Microsoft's 8-domain / 29-check review, every verdict tied to its evidence file
 
 Run a single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
+`-Log` keeps everything printed in `output/run-log.txt`.
+
+**Something failed, or you want a second pair of eyes?** [docs/troubleshooting.md](docs/troubleshooting.md):
+a paste-ready prompt for an AI session on the same machine, and `scripts/share-diagnostics.ps1`,
+which writes a redacted description of the run (versions, setup check, failed pulls as status
+codes, counts) that is safe to paste to someone outside the machine. Nothing from `output/`
+ever needs to leave the server.
 
 **Scope.** Audit exactly the estate you mean: a `scope.json` next to `.env` (start from
 `scope.example.json`) or the `-Scope <file>`, `-Subscriptions`, `-ResourceGroups`,
@@ -113,7 +122,7 @@ you pick.
 ## Requirements
 
 - PowerShell 7+ (or Windows PowerShell 5.1)
-- A read-only app registration. This is the only way the tool authenticates - no Azure CLI, no interactive sign-in.
+- A read-only app registration. This is the only way the audit authenticates - no Azure CLI, no interactive sign-in.
 - Read-only permissions per [docs/permissions.md](docs/permissions.md)
 
 ## Use it responsibly

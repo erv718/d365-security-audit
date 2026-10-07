@@ -54,6 +54,8 @@ try {
 } catch {
     $e = Get-ErrorText $_
     Write-PpFailure 'environments' $e
+    # The URL list from an earlier run must not pass for this run's discovery.
+    Remove-Item (Join-Path (Get-OutDir) 'pp-environment-urls.json') -Force -ErrorAction SilentlyContinue
     Save-Json @{ error = $e; note = 'Optional: New-PowerAppManagementApp -ApplicationId <CLIENT_ID> (Power Platform Administrator rights; remove after the run with Remove-PowerAppManagementApp), or select environments with -Environments.' } 'pp-environments-ERROR.json' | Out-Null
 }
 

@@ -22,7 +22,7 @@ Write-Host "Dataverse: $($envs.Count) environment(s)$(if($res.selected -gt 0){' 
 Update-ScopeEffective {
     param($x)
     Set-ScopeField $x.powerPlatform 'discoveredEnvironments' $res.discovered
-    Set-ScopeField $x.powerPlatform 'resolved' @($res.environments)
+    Set-ScopeField $x.powerPlatform 'resolved' (Merge-ScopeResolved $x.powerPlatform.resolved $res.environments)
     Set-ScopeField $x.powerPlatform 'unresolved' @($res.unresolved)
 } | Out-Null
 
@@ -42,6 +42,12 @@ function Save-DvArea($base, $H, $safe, $path, $file, $label) {
 foreach ($url in $envs) {
     $safe = ($url -replace 'https?://','' -replace '\..*','')
     Write-Host "Dataverse: $safe" -ForegroundColor Cyan
+    $reach = Get-ScopeEnvReachability $scope $url
+    if (-not $reach.reachable) {
+        Write-Host "  [$safe] skipped: the app is not an Application User here (see the setup check)" -ForegroundColor Yellow
+        foreach ($k in 'org', 'entities', 'roles', 'solutions', 'fieldsec', 'users', 'orginfo') { Save-Json @{ error = $reach.reason } "dv-$safe-$($script:DvReads[$k].File)-ERROR.json" | Out-Null }
+        continue
+    }
     $tok = Get-Token $url
     if (-not $tok) { Write-Warning "  no token for $url"; continue }
     $H = @{ Authorization = "Bearer $tok"; Accept = 'application/json'; 'OData-Version' = '4.0' }

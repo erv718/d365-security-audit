@@ -13,7 +13,7 @@ it, and keep the Azure spending limit on. Nothing here should ever charge a card
 
 ## Automated version
 
-Two scripts in `testdata/` do steps 5 and 6 for you. Both WRITE to the tenant, which is why
+Three scripts in `testdata/` cover steps 5 and 6 for you. All of them WRITE to the tenant, which is why
 they live outside `scripts/` and carry the same warning: dev/test tenants you own only, never
 anything else. They are not part of the audit tool and `run-audit.ps1` never calls them.
 
@@ -122,8 +122,8 @@ verdict, so you can confirm the tool reports what it should.
 | Azure SQL logical server that allows Azure services | portal.azure.com > Create a resource > SQL server (the logical server alone, no database, no cost) > Networking > Public access: Selected networks, and tick "Allow Azure services and resources to access this server" | analyze: public network access (HIGH) and allows all Azure IPs 0.0.0.0 (HIGH) |
 | NSG with RDP open to the internet | Create a resource > Network security group (free, no VM needed) > Inbound security rules > Add: Source Any, Destination port 3389, Action Allow | analyze: NSG opens port 3389 to the internet (HIGH) |
 | Key Vault on access policies with public access | Create a resource > Key vault > Access configuration: Vault access policy; Networking: public access enabled. An unused standard vault costs nothing measurable | analyze: legacy access policies (MEDIUM), public network access (MEDIUM) |
-| Dataverse auditing off in one environment | admin.powerplatform.microsoft.com > Manage > Environments > (env) > Settings > Audit and logs > Audit settings > leave "Start auditing" unchecked in one environment | 4.1 Gap or Partial; analyze auditing OFF (HIGH, for environments in DATAVERSE_ENVIRONMENTS) |
-| No custom security roles | A fresh environment has none | 1.2 and 5.1 Gap; analyze zero custom roles (MEDIUM) |
+| Dataverse auditing off in one environment | admin.powerplatform.microsoft.com > Manage > Environments > (env) > Settings > Audit and logs > Audit settings > leave "Start auditing" unchecked in one environment | 4.1 Gap or Partial; analyze auditing OFF (HIGH, per environment read) |
+| No custom security roles | A fresh environment has none | 1.2 and 5.1 Partial; analyze no unmanaged roles (LOW) |
 | One guest account | entra.microsoft.com > Users > New user > Invite external user, to an email address you control | analyze guest count (MEDIUM); guest domains in the report |
 | No environment security group | Leave the Trial environment without one | 1.3 and 2.4 Gap |
 | No DLP policy | Do nothing | 5.3 Gap; default environment "NOT covered" |
@@ -147,6 +147,9 @@ confirm the verdict moves the way you expect.
 ## 8. Tear down
 
 - Delete the Azure resource group(s) holding the SQL server, NSG and Key Vault.
+- The seed script also registered the Microsoft.Sql, Microsoft.Network and Microsoft.KeyVault
+  resource providers on the subscription if they were missing. That stays; unregister them under
+  the subscription's **Resource providers** blade if you want the subscription exactly as it was.
 - Delete or expire the client secrets and, if the app was one-time, the app registration.
 - Leave recurring billing off; the trials expire on their own, and Microsoft deletes the
   tenant after the trial lapses and the retention period ends.

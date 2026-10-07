@@ -18,23 +18,24 @@ function Get-ArmScoped($base, $groups, $providerPath) { $items = @(); foreach ($
 
 $scope = Read-ScopeEffective
 try { $allSubs = @(Get-Arm 'https://management.azure.com/subscriptions?api-version=2022-12-01') }
-catch { Write-Warning "Could not list subscriptions: $($_.Exception.Message)"; return }
+catch { $why = Get-ErrorText $_; Write-Warning "Could not list subscriptions: $why"; Save-Json @{ error = $why } 'arm-subscriptions-ERROR.json' | Out-Null; return }
 $subs = @(Select-ScopedSubscriptions $scope $allSubs)
 $invisible = @(Get-ScopeInvisibleSubscriptions $scope $allSubs)
 if ($invisible.Count -gt 0) { Write-Warning "Azure+: $($invisible.Count) selected subscription(s) not visible to the app: $($invisible -join ', ')" }
 Write-Host "Azure+: auditing $($subs.Count) of $($allSubs.Count) visible subscription(s)" -ForegroundColor Cyan
 $rgSelected = @(Get-ScopeItems $scope.azure.resourceGroups)
+$safeNames = Get-SubscriptionSafeNames $allSubs
 
 foreach ($s in $subs) {
     $sid = $s.subscriptionId; $base = "https://management.azure.com/subscriptions/$sid"
-    $safe = ($s.displayName -replace '[^A-Za-z0-9]','_')
+    $safe = $safeNames["$sid"]
     Write-Host "  $($s.displayName)" -ForegroundColor Cyan
 
     $groups = $null
     if ($rgSelected.Count -gt 0) {
         $names = @()
         try { $names = @(@(Get-Arm "$base/resourcegroups?api-version=2021-04-01") | ForEach-Object { "$($_.name)" }) }
-        catch { Write-Warning "    resource groups could not be listed: $($_.Exception.Message)" }
+        catch { Write-Warning "    resource groups could not be listed: $(Get-ErrorText $_)" }
         $groups = Select-ScopedResourceGroups $scope $names
         Write-Host "    resource groups in scope here: $(@($groups).Count) of $($names.Count) (Defender plans and diagnostic settings are subscription-wide)" -ForegroundColor Yellow
     }
@@ -49,8 +50,15 @@ foreach ($s in $subs) {
         Save-Json $pricings "arm-$safe-defender-pricings.json" | Out-Null
         Write-Host "      $defenderStandard of $(@($pricings).Count) plan(s) on Standard tier" -ForegroundColor Yellow
     } catch {
-        Write-Warning "    Defender pricings failed: $($_.Exception.Message)"
-        Save-Json @{ error = $_.Exception.Message } "arm-$safe-defender-pricings-ERROR.json" | Out-Null
+        $why = Get-ErrorText $_
+        if ($why -match '\b404\b') {
+            # The Microsoft.Security provider is not registered: Defender for Cloud was never turned on here.
+            Save-Json @() "arm-$safe-defender-pricings.json" | Out-Null
+            Write-Host '      Defender for Cloud has never been enabled on this subscription (no plans; the Microsoft.Security provider is not registered).' -ForegroundColor Yellow
+        } else {
+            Write-Warning "    Defender pricings failed: $why"
+            Save-Json @{ error = $why } "arm-$safe-defender-pricings-ERROR.json" | Out-Null
+        }
     }
 
     # --- Log Analytics workspaces + Sentinel onboarding (resource reader) --------
@@ -62,8 +70,8 @@ foreach ($s in $subs) {
             Save-Json $ws "arm-$safe-loganalytics.json" | Out-Null
             Write-Host "      $($ws.Count) workspace(s)" -ForegroundColor Yellow
         } catch {
-            Write-Warning "    Log Analytics failed: $($_.Exception.Message)"
-            Save-Json @{ error = $_.Exception.Message } "arm-$safe-loganalytics-ERROR.json" | Out-Null
+            Write-Warning "    Log Analytics failed: $(Get-ErrorText $_)"
+            Save-Json @{ error = (Get-ErrorText $_) } "arm-$safe-loganalytics-ERROR.json" | Out-Null
         }
 
         Write-Host '    Microsoft Sentinel onboarding...' -ForegroundColor Cyan
@@ -76,7 +84,7 @@ foreach ($s in $subs) {
                 } catch {
                     $code = $null
                     try { $code = [int]$_.Exception.Response.StatusCode } catch {}
-                    if ($code -ne 404) { $err = $_.Exception.Message }
+                    if ($code -ne 404) { $err = (Get-ErrorText $_) }
                 }
                 [pscustomobject]@{ workspace = $w.name; workspaceId = $w.id; location = $w.location; sentinelEnabled = $enabled; error = $err }
             }
@@ -85,8 +93,8 @@ foreach ($s in $subs) {
             Save-Json $sentinel "arm-$safe-sentinel.json" | Out-Null
             Write-Host "      Sentinel enabled on $sentinelOn of $($ws.Count) workspace(s)" -ForegroundColor Yellow
         } catch {
-            Write-Warning "    Sentinel onboarding failed: $($_.Exception.Message)"
-            Save-Json @{ error = $_.Exception.Message } "arm-$safe-sentinel-ERROR.json" | Out-Null
+            Write-Warning "    Sentinel onboarding failed: $(Get-ErrorText $_)"
+            Save-Json @{ error = (Get-ErrorText $_) } "arm-$safe-sentinel-ERROR.json" | Out-Null
         }
     } else { Write-Host '    Log Analytics / Sentinel: skipped by scope (types)' -ForegroundColor DarkGray }
 
@@ -97,8 +105,8 @@ foreach ($s in $subs) {
         Save-Json $diag "arm-$safe-diagnostic-settings.json" | Out-Null
         Write-Host "      $(@($diag).Count) diagnostic setting(s)" -ForegroundColor Yellow
     } catch {
-        Write-Warning "    Diagnostic settings failed: $($_.Exception.Message)"
-        Save-Json @{ error = $_.Exception.Message } "arm-$safe-diagnostic-settings-ERROR.json" | Out-Null
+        Write-Warning "    Diagnostic settings failed: $(Get-ErrorText $_)"
+        Save-Json @{ error = (Get-ErrorText $_) } "arm-$safe-diagnostic-settings-ERROR.json" | Out-Null
     }
 
     # --- Logic Apps (integration workflows; resource reader) ---------------------
@@ -121,15 +129,16 @@ foreach ($s in $subs) {
                     $callers = if ($ips.Count) { 'ip-list' } else { 'logic-apps-only' }
                 }
                 $entra = [bool]($ac -and $ac.openAuthenticationPolicies -and $ac.openAuthenticationPolicies.policies -and @($ac.openAuthenticationPolicies.policies.PSObject.Properties).Count)
-                [pscustomobject]@{ name = $la.name; location = $la.location; resourceGroup = $rg; state = $la.properties.state; id = $la.id; triggers = $trig; callers = $callers; allowedCallerIps = $ips; entraAuthPolicy = $entra }
+                $sasOff = [bool]($ac -and $ac.sasAuthenticationPolicy -and "$($ac.sasAuthenticationPolicy.state)" -eq 'Disabled')
+                [pscustomobject]@{ name = $la.name; location = $la.location; resourceGroup = $rg; state = $la.properties.state; id = $la.id; triggers = $trig; callers = $callers; allowedCallerIps = $ips; entraAuthPolicy = $entra; sasDisabled = $sasOff }
             }
             $logicInfo = @($logicInfo)
             $logicCount = $logicInfo.Count
             Save-Json $logicInfo "arm-$safe-logicapps.json" | Out-Null
             Write-Host "      $logicCount logic app workflow(s)" -ForegroundColor Yellow
         } catch {
-            Write-Warning "    Logic Apps failed: $($_.Exception.Message)"
-            Save-Json @{ error = $_.Exception.Message } "arm-$safe-logicapps-ERROR.json" | Out-Null
+            Write-Warning "    Logic Apps failed: $(Get-ErrorText $_)"
+            Save-Json @{ error = (Get-ErrorText $_) } "arm-$safe-logicapps-ERROR.json" | Out-Null
         }
     } else { Write-Host '    Logic Apps: skipped by scope (types)' -ForegroundColor DarkGray }
 

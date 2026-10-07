@@ -53,7 +53,7 @@ function Get-Token {
             grant_type = 'client_credentials'; scope = "$Resource/.default"
         }).access_token
     } catch {
-        Write-Warning "App token for $Resource failed: $($_.Exception.Message)"
+        Write-Warning "App token for $Resource failed: $(Get-ErrorText $_)"
         return $null
     }
 }
@@ -114,10 +114,38 @@ function ConvertTo-DateSafe($v) {
 function Save-Json {
     param($Data, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $Data) { $Data = @() }   # never crash on an empty/absent result
-    $path = Join-Path (Get-OutDir) $Name
+    $dir = Get-OutDir
+    $path = Join-Path $dir $Name
     # -InputObject (not pipeline) so an empty array serialises to "[]" instead of nothing.
     ConvertTo-Json -Depth 12 -InputObject $Data | Out-File -Encoding utf8 $path
+    # A pull writes <name>.json OR <name>-ERROR.json. The other one, left by an earlier run,
+    # would be read as this run's evidence, so it goes.
+    $sibling = if ($Name -like '*-ERROR.json') { Join-Path $dir ($Name -replace '-ERROR\.json$', '.json') } else { Join-Path $dir ($Name -replace '\.json$', '-ERROR.json') }
+    if ($sibling -ne $path -and (Test-Path $sibling)) { Remove-Item $sibling -Force -ErrorAction SilentlyContinue }
     return $path
+}
+
+# Settings that may only come from .env, never from the process environment: the AI analysis
+# switch and its endpoint, so a stray variable on a build agent can never send findings anywhere.
+function Get-DotEnvValue {
+    param([string]$Key, [string]$Default = '')
+    if ($script:Conf.ContainsKey($Key) -and $script:Conf[$Key]) { return $script:Conf[$Key] }
+    return $Default
+}
+
+# File-name-safe subscription names. Azure allows two subscriptions with the same display name
+# (every pay-as-you-go one starts as 'Pay-As-You-Go'), so a repeat gets the first 8 characters of
+# its id appended. Built from the full visible list, in id order, so every Azure script agrees.
+function Get-SubscriptionSafeNames($allSubs) {
+    $names = @{}; $used = @{}
+    foreach ($s in @($allSubs | Where-Object { $_ } | Sort-Object { "$($_.subscriptionId)" })) {
+        $safe = ("$($s.displayName)" -replace '[^A-Za-z0-9]', '_')
+        if (-not $safe) { $safe = 'subscription' }
+        if ($used.ContainsKey($safe.ToLower())) { $safe = "$safe-$("$($s.subscriptionId)".PadRight(8).Substring(0, 8).Trim())" }
+        $used[$safe.ToLower()] = 1
+        $names["$($s.subscriptionId)"] = $safe
+    }
+    return $names
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -361,6 +389,31 @@ function Resolve-ScopeEnvironments($scope, $Catalog = $null) {
     $seen = @{}; $unique = @()
     foreach ($r in $resolved) { $k = $r.url.ToLower(); if (-not $seen.ContainsKey($k)) { $seen[$k] = 1; $unique += $r } }
     return [pscustomobject]@{ environments = $unique; unresolved = $unresolved; discovered = $discovered.Count; selected = $sel.Count }
+}
+
+# The setup check marks each resolved environment reachable or not (WhoAmI). An environment it
+# could not reach is skipped by both Dataverse sweeps; $null (no setup check ran) = try it.
+# Merge-ScopeResolved keeps those marks when a sweep rewrites the resolved list.
+function Merge-ScopeResolved($existing, $fresh) {
+    $marks = @{}
+    foreach ($re in @($existing)) { if ($re -and $re.url -and ($re.PSObject.Properties.Name -contains 'reachable')) { $marks["$($re.url)".TrimEnd('/').ToLower()] = $re } }
+    $outList = @()
+    foreach ($n in @($fresh)) {
+        if (-not $n) { continue }
+        $k = "$($n.url)".TrimEnd('/').ToLower()
+        if ($marks.ContainsKey($k)) { Set-ScopeField $n 'reachable' $marks[$k].reachable; Set-ScopeField $n 'reason' "$($marks[$k].reason)" }
+        $outList += $n
+    }
+    return ,$outList
+}
+function Get-ScopeEnvReachability($scope, [string]$url) {
+    $u = "$url".TrimEnd('/')
+    foreach ($re in @($scope.powerPlatform.resolved)) {
+        if ($re -and "$($re.url)".TrimEnd('/') -eq $u -and ($re.PSObject.Properties.Name -contains 'reachable') -and $re.reachable -eq $false) {
+            return [pscustomobject]@{ reachable = $false; reason = "$($re.reason)" }
+        }
+    }
+    return [pscustomobject]@{ reachable = $true; reason = '' }
 }
 
 # Text pieces shared by check-setup, the report and the findings.

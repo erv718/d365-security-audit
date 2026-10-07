@@ -11,9 +11,10 @@
 #   (no -FromInventory)          Lists what the app can see (subscriptions, resource groups,
 #                                environments) with read-only GETs and offers numbered pickers.
 #                                Signs in as the .env app registration. -DeviceCode signs in as a
-#                                person instead: the only interactive sign-in in this repo, and it
-#                                lives here, in a helper that writes one local file. The audit
-#                                itself never prompts.
+#                                person instead: the only interactive sign-in among the scripts the
+#                                audit ships (the testdata/ helpers for throwaway tenants also sign
+#                                in as a person), and it lives here, in a helper that writes one
+#                                local file. The audit itself never prompts.
 #
 # Read-only against the tenant. Writes exactly one local file, scope.json (or -Out). Empty lists
 # in that file mean "everything the app can read"; delete the file to go back to a full run.

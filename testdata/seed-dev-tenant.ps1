@@ -28,6 +28,9 @@
 #       network access and the allow-all-Azure-IPs firewall rule (0.0.0.0 to 0.0.0.0);
 #       an NSG with an inbound allow rule from any source to port 3389; a standard Key Vault
 #       on legacy access policies (enableRbacAuthorization false) with public network access.
+#     - registration of the Microsoft.Sql, Microsoft.Network and Microsoft.KeyVault resource
+#       providers on the subscription when they are missing: a subscription-wide setting that
+#       outlives the fixtures (docs/dev-tenant-setup.md, tear down).
 #
 # Authentication: interactive device-code flow in pure REST (POST /oauth2/v2.0/devicecode,
 # then poll /oauth2/v2.0/token) using Microsoft's well-known first-party public client ids,

@@ -98,7 +98,7 @@ $sd = Load 'security-defaults.json'
 $sdOn = ($null -ne $sd -and $sd.isEnabled -eq $true)
 if ($null -ne $ca) {
     $on = @($ca | Where-Object { $_.state -eq 'enabled' })
-    $mfaEnforced = @($ca | Where-Object { $_.state -eq 'enabled' -and $_.grantControls.builtInControls -contains 'mfa' })
+    $mfaEnforced = @($ca | Where-Object { $_.state -eq 'enabled' -and ($_.grantControls.builtInControls -contains 'mfa' -or $null -ne $_.grantControls.authenticationStrength) })
     $sev = 'HIGH'; if ($mfaEnforced.Count -gt 0 -or $sdOn) { $sev = 'LOW' }
     Add-Finding $sev 'Conditional Access' "$(@($ca).Count) CA policies; $($on.Count) enabled; $($mfaEnforced.Count) enabled policies require MFA$(if($sdOn){'; security defaults ON (baseline MFA for everyone)'})."
 }
@@ -185,7 +185,7 @@ Get-ChildItem $out -Filter 'dv-*-org.json' | ForEach-Object {
     $orgs = Load $_.Name; $org = @($orgs)[0]
     if ($org -and $org.isauditenabled -eq $false) { Add-Finding 'HIGH' 'Auditing' "[$envName] Dataverse auditing is OFF - no record of who changes data." 'dataverse' }
     $roles = Load "dv-$envName-roles.json"
-    if ($null -ne $roles) { $custom = @($roles | Where-Object { $_.ismanaged -eq $false }).Count; if ($custom -eq 0) { Add-Finding 'MEDIUM' 'Roles' "[$envName] Zero custom security roles - only built-in roles available to assign." 'dataverse' } }
+    if ($null -ne $roles) { $custom = @($roles | Where-Object { $_.ismanaged -eq $false }).Count; if ($custom -eq 0) { Add-Finding 'LOW' 'Roles' "[$envName] No unmanaged (customer-authored) security role. Roles delivered in managed solutions are not told apart from built-in ones by this read; confirm a least-privilege role exists for everyday users." 'dataverse' } }
 }
 
 # --- Dataverse: table-level auditing ---
@@ -322,6 +322,7 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-nsgs.json')) {
         foreach ($rule in @($nsg.properties.securityRules | Where-Object { $_ })) {
             $p = $rule.properties
             if ("$($p.access)" -ne 'Allow' -or "$($p.direction)" -ne 'Inbound') { continue }
+            if ("$($p.protocol)" -eq 'Icmp') { continue }   # ping, not a port
             $srcs = @(@($p.sourceAddressPrefix) + @($p.sourceAddressPrefixes) | Where-Object { $_ } | ForEach-Object { "$_" })
             $ports = @(@($p.destinationPortRange) + @($p.destinationPortRanges) | Where-Object { $_ } | ForEach-Object { "$_" })
             $hits = @(Get-RiskyPortHits $ports)
@@ -344,7 +345,7 @@ Get-ChildItem $out -Filter 'arm-*-keyvaults.json' | ForEach-Object {
     $items = Load $_.Name
     foreach ($v in @($items | Where-Object { $_ })) {
         if (-not $v.properties.enableRbacAuthorization) { Add-Finding 'MEDIUM' 'Key Vault' "Key vault '$($v.name)' uses legacy access policies (not RBAC)." 'azure' }
-        if ($v.properties.publicNetworkAccess -eq 'Enabled') { Add-Finding 'MEDIUM' 'Key Vault' "Key vault '$($v.name)' allows public network access." 'azure' }
+        if ("$($v.properties.publicNetworkAccess)" -ne 'Disabled' -and "$($v.properties.networkAcls.defaultAction)" -ne 'Deny') { Add-Finding 'MEDIUM' 'Key Vault' "Key vault '$($v.name)' allows public network access from any network (no firewall default-deny)." 'azure' }
     }
 }
 
@@ -410,8 +411,8 @@ $stOpen = @(); $stAnon = @(); $stHttp = @(); $stTls = @(); $stKey = @()
 foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-storage.json')) {
     $x = Load $f.Name
     foreach ($a in @($x | Where-Object { $_ })) {
-        if ("$($a.publicNetworkAccess)" -ne 'Disabled' -and "$($a.defaultAction)" -eq 'Allow') { $stOpen += $a.name }
-        if ($a.allowBlobPublicAccess -eq $true) { $stAnon += $a.name }
+        if ("$($a.publicNetworkAccess)" -notin 'Disabled', 'SecuredByPerimeter' -and "$($a.defaultAction)" -eq 'Allow') { $stOpen += $a.name }
+        if ($a.allowBlobPublicAccess -ne $false) { $stAnon += $a.name }
         if ($a.supportsHttpsTrafficOnly -eq $false) { $stHttp += $a.name }
         if ("$($a.minimumTlsVersion)" -in 'TLS1_0', 'TLS1_1') { $stTls += "$($a.name) ($($a.minimumTlsVersion))" }
         if ($a.allowSharedKeyAccess -ne $false) { $stKey += $a.name }
@@ -419,35 +420,48 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-storage.json')) {
     }
 }
 if ($stOpen.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stOpen.Count) storage account(s) accept connections from all networks (public network access on, default action Allow): $($stOpen -join ', '). Data access still needs a key or a token, but anyone can try; limit them to selected networks or private endpoints." 'azure' }
-if ($stAnon.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stAnon.Count) storage account(s) let anonymous (public) blob access be turned on for a container: $($stAnon -join ', '). Set 'Allow Blob anonymous access' to Disabled unless a container is meant to be public." 'azure' }
+if ($stAnon.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stAnon.Count) storage account(s) allow, or do not block (setting unset on an older account), anonymous blob access on containers: $($stAnon -join ', '). Set 'Allow Blob anonymous access' to Disabled unless a container is meant to be public." 'azure' }
 if ($stHttp.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stHttp.Count) storage account(s) accept plain HTTP (secure transfer not required): $($stHttp -join ', ')." 'azure' }
 if ($stTls.Count) { Add-Finding 'LOW' 'Storage' "$($stTls.Count) storage account(s) are set to accept TLS below 1.2: $($stTls -join ', '). Set the minimum to TLS 1.2." 'azure' }
 if ($stKey.Count) { Add-Finding 'LOW' 'Storage' "$($stKey.Count) storage account(s) still accept shared-key authorization (account keys and SAS tokens), which bypasses Entra ID and leaves no per-user trail: $($stKey -join ', '). Turn it off where nothing depends on it." 'azure' }
 
 # --- App Service and Function Apps (arm-*-appservice.json) ---
-$apHttp = @(); $apTls = @(); $apFtp = @(); $apDebug = @(); $apOpen = @(); $fnOpen = @(); $fnLimited = @()
+$apHttp = @(); $apTls = @(); $apFtp = @(); $apDebug = @(); $apOpen = @(); $apUnread = @(); $fnOpen = @(); $fnLimited = @(); $fnAuth = @(); $fnUnknown = @()
 foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-appservice.json')) {
     $x = Load $f.Name
     foreach ($site in @($x | Where-Object { $_ })) {
         if ($site.httpsOnly -eq $false) { $apHttp += $site.name }
         $c = $site.config
-        if (-not $c) { continue }
-        if ("$($c.minTlsVersion)" -in '1.0', '1.1') { $apTls += "$($site.name) ($($c.minTlsVersion))" }
-        if ("$($c.ftpsState)" -eq 'AllAllowed') { $apFtp += $site.name }
-        if ($c.remoteDebuggingEnabled -eq $true) { $apDebug += $site.name }
-        $pna = if ($site.publicNetworkAccess) { "$($site.publicNetworkAccess)" } else { "$($c.publicNetworkAccess)" }
-        $rules = @($c.ipSecurityRestrictions | Where-Object { $_ })
-        $limited = ("$($c.ipSecurityRestrictionsDefaultAction)" -eq 'Deny') -or (@($rules | Where-Object { "$($_.action)" -eq 'Allow' -and (("$($_.ipAddress)" -and "$($_.ipAddress)" -ne 'Any') -or $_.vnetSubnetResourceId) }).Count -gt 0)
-        $open = ($pna -ne 'Disabled') -and -not $limited
-        if ($open) { $apOpen += $site.name }
-        Add-AllowList 'App' $site.name @($rules | Where-Object { "$($_.action)" -eq 'Allow' -and "$($_.ipAddress)" -and "$($_.ipAddress)" -ne 'Any' -and "$($_.tag)" -ne 'ServiceTag' } | ForEach-Object { @{ rule = "$($_.name)"; range = "$($_.ipAddress)" } }) 'azure' 'allows'
+        $open = $null   # unknown until the web config was read
+        if ($c) {
+            if ("$($c.minTlsVersion)" -in '1.0', '1.1') { $apTls += "$($site.name) ($($c.minTlsVersion))" }
+            if ("$($c.ftpsState)" -eq 'AllAllowed') { $apFtp += $site.name }
+            if ($c.remoteDebuggingEnabled -eq $true) { $apDebug += $site.name }
+            $pna = if ($site.publicNetworkAccess) { "$($site.publicNetworkAccess)" } else { "$($c.publicNetworkAccess)" }
+            $rules = @($c.ipSecurityRestrictions | Where-Object { $_ })
+            # Restricted when the unmatched-rule action is Deny, or (older configs, no explicit
+            # default) when an Allow rule names a range or a subnet: everything else is then denied.
+            # An explicit default of Allow means the Allow rules restrict nothing.
+            $dfl = "$($c.ipSecurityRestrictionsDefaultAction)"
+            $explicitAllow = @($rules | Where-Object { "$($_.action)" -eq 'Allow' -and (("$($_.ipAddress)" -and "$($_.ipAddress)" -ne 'Any') -or $_.vnetSubnetResourceId) }).Count -gt 0
+            $limited = ($dfl -eq 'Deny') -or ((-not $dfl) -and $explicitAllow)
+            $open = ($pna -ne 'Disabled') -and -not $limited
+            if ($open) { $apOpen += $site.name }
+            Add-AllowList 'App' $site.name @($rules | Where-Object { "$($_.action)" -eq 'Allow' -and "$($_.ipAddress)" -and "$($_.ipAddress)" -ne 'Any' -and "$($_.tag)" -ne 'ServiceTag' } | ForEach-Object { @{ rule = "$($_.name)"; range = "$($_.ipAddress)" } }) 'azure' 'allows'
+        } else { $apUnread += $site.name }
         foreach ($fn in @($site.functions | Where-Object { $_ -and $_.httpTrigger -and "$($_.authLevel)" -eq 'anonymous' -and $_.disabled -ne $true })) {
-            if ($open) { $fnOpen += "$($site.name)/$($fn.name)" } else { $fnLimited += "$($site.name)/$($fn.name)" }
+            $label = "$($site.name)/$($fn.name)"
+            if ($site.easyAuth -eq $true) { $fnAuth += $label }
+            elseif ($null -eq $open) { $fnUnknown += $label }
+            elseif ($open) { $fnOpen += $label } else { $fnLimited += $label }
         }
     }
 }
-if ($fnOpen.Count) { Add-Finding 'MEDIUM' 'App Service' "$($fnOpen.Count) HTTP function(s) need no key (authLevel anonymous) on app(s) that accept traffic from any IP: $((@($fnOpen) | Select-Object -First 12) -join ', '). Anyone who finds the URL can call them; use function keys, Entra ID authentication or access restrictions unless they are meant to be public." 'azure' }
+if ($fnOpen.Count) { Add-Finding 'MEDIUM' 'App Service' "$($fnOpen.Count) HTTP function(s) need no key (authLevel anonymous) on app(s) that accept traffic from any IP and have no App Service authentication: $((@($fnOpen) | Select-Object -First 12) -join ', '). Anyone who finds the URL can call them; use function keys, App Service authentication or access restrictions unless they are meant to be public." 'azure' }
+if ($fnUnknown.Count) { Add-Finding 'LOW' 'App Service' "$($fnUnknown.Count) HTTP function(s) need no key, and the app's web config could not be read, so whether anyone can reach them is unknown: $((@($fnUnknown) | Select-Object -First 12) -join ', ')." 'azure' }
 if ($fnLimited.Count) { Add-Finding 'LOW' 'App Service' "$($fnLimited.Count) HTTP function(s) need no key but sit behind access restrictions or private access: $((@($fnLimited) | Select-Object -First 12) -join ', ')." 'azure' }
+if ($fnAuth.Count) { Add-Finding 'LOW' 'App Service' "$($fnAuth.Count) HTTP function(s) need no function key but App Service authentication requires a sign-in first: $((@($fnAuth) | Select-Object -First 12) -join ', ')." 'azure' }
+if ($apUnread.Count) { Add-Finding 'LOW' 'App Service' "$($apUnread.Count) app(s) whose web configuration could not be read (TLS, FTP, debugging and access restrictions unknown; see arm-*-appservice.json errors): $((@($apUnread) | Select-Object -First 15) -join ', ')." 'azure' }
 if ($apHttp.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apHttp.Count) app(s) do not force HTTPS (HTTPS Only off): $($apHttp -join ', ')." 'azure' }
 if ($apTls.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apTls.Count) app(s) accept TLS below 1.2: $($apTls -join ', ')." 'azure' }
 if ($apFtp.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apFtp.Count) app(s) accept plain FTP for deployments (FTP state All allowed): $($apFtp -join ', '). Set it to FTPS only or Disabled." 'azure' }
@@ -460,11 +474,11 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-logicapps.json')) {
     $x = Load $f.Name
     foreach ($la in @($x | Where-Object { $_ })) {
         $http = @($la.triggers | Where-Object { $_ -and "$($_.type)" -eq 'Request' })
-        if ($http.Count -and "$($la.callers)" -eq 'any' -and $la.entraAuthPolicy -ne $true) { $laOpen += "$($la.name)$(if($la.state -and "$($la.state)" -ne 'Enabled'){" ($($la.state))"})" }
+        if ($http.Count -and "$($la.callers)" -eq 'any' -and -not ($la.entraAuthPolicy -eq $true -and $la.sasDisabled -eq $true)) { $laOpen += "$($la.name)$(if($la.state -and "$($la.state)" -ne 'Enabled'){" ($($la.state))"})$(if($la.entraAuthPolicy -eq $true){' (Entra policy present, but SAS URLs still accepted)'})" }
         Add-AllowList 'Logic App' $la.name @(@($la.allowedCallerIps | Where-Object { $_ }) | ForEach-Object { @{ rule = "$_"; range = "$_" } }) 'azure' 'accepts calls from'
     }
 }
-if ($laOpen.Count) { Add-Finding 'LOW' 'Integration' "$($laOpen.Count) Logic App(s) start from an HTTP request and accept calls from any IP: $((@($laOpen) | Select-Object -First 15) -join ', '). Each call still needs the trigger URL's signature, so anyone holding that URL can start the workflow; restrict caller IPs or add an Entra ID authorization policy." 'azure' }
+if ($laOpen.Count) { Add-Finding 'LOW' 'Integration' "$($laOpen.Count) Logic App(s) start from an HTTP request and accept calls from any IP: $((@($laOpen) | Select-Object -First 15) -join ', '). Each call still needs the trigger URL's signature, so anyone holding that URL can start the workflow; restrict caller IPs, or add an Entra ID authorization policy and disable SAS authentication." 'azure' }
 
 # --- Automation: retired Run As connections (arm-*-automation.json) ---
 $runAs = @()
@@ -475,7 +489,7 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-automation.json')) {
         if ($ra.Count) { $runAs += "$($acct.name) ($((@($ra | ForEach-Object { "$($_.name)" })) -join ', '))" }
     }
 }
-if ($runAs.Count) { Add-Finding 'MEDIUM' 'Service identities' "$($runAs.Count) Automation account(s) still hold a Run As (service principal certificate) connection, a feature Microsoft retired on 30 September 2023: $($runAs -join '; '). Its app registration can still carry Contributor on the subscription; move the runbooks to a managed identity, then delete that app registration and its role assignment." 'azure' }
+if ($runAs.Count) { Add-Finding 'MEDIUM' 'Service identities' "$($runAs.Count) Automation account(s) hold an AzureServicePrincipal (Run As style) connection asset; Microsoft retired the Run As feature on 30 September 2023, and a hand-made one carries the same risk: $($runAs -join '; '). Its app registration can still carry Contributor on the subscription; move the runbooks to a managed identity, then delete that app registration and its role assignment." 'azure' }
 
 # --- API connections that sign in as a named account (arm-*-apiconnections.json) ---
 $apiNamed = @(); $apiDormant = @()

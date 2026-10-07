@@ -33,7 +33,7 @@ an Azure **Reader** role, and a Dataverse **security role** as an application us
 | `RoleManagement.Read.Directory` | Directory roles + members, PIM eligible/active assignments |
 | `User.Read.All` | Guest counts, the names behind role members, per-user sign-in activity (dormant accounts) |
 | `Policy.Read.All` | Conditional Access, named locations, auth methods policy, security defaults |
-| `AuditLog.Read.All` | Sign-in sample, per-user last sign-in for dormant-account detection, MFA registration report (needs Entra ID P1) |
+| `AuditLog.Read.All` | Sign-in sample and per-user last sign-in for dormant-account detection (needs Entra ID P1) |
 | `DeviceManagementConfiguration.Read.All` | Intune device compliance policies |
 | `DeviceManagementManagedDevices.Read.All` | Intune managed-device overview |
 
@@ -118,11 +118,13 @@ names a table that is not in the list above, add Read (Organization) on that one
 Never give the app user `System Administrator` or `System Customizer`: both can change the
 environment, and the setup check flags them.
 
-**Automated alternative:** `testdata/add-dataverse-app-user.ps1 -ClientId <your CLIENT_ID>`
+**Automated alternative:** `testdata/add-dataverse-app-user.ps1 -ClientId <your CLIENT_ID> -RoleName 'SecAudit - Read Only'`
 discovers every Dataverse environment in the tenant and does the same two changes (app
-user + role binding) over REST, with a plan table first and `-Force` to apply. It asks you
-to sign in as a tenant admin once per plane (device code). Review the script first; it
-writes exactly those records and nothing else.
+user + role binding) over REST, with a plan table first and `-Force` to apply. Always pass
+`-RoleName` with your read-only role: without it the script binds System Customizer, which
+this section tells you never to use. It asks you to sign in as a tenant admin (device code)
+once for the admin API and once per environment. It is a throwaway-tenant helper; review the
+script first, it writes exactly those records and nothing else.
 
 ## 5. Power Platform admin API (optional: environment list, DLP, tenant settings)
 

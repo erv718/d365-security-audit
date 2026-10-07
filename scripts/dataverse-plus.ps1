@@ -34,7 +34,7 @@ Write-Host "Dataverse+: $($envs.Count) environment(s) to check$(if($res.selected
 Update-ScopeEffective {
     param($x)
     Set-ScopeField $x.powerPlatform 'discoveredEnvironments' $res.discovered
-    Set-ScopeField $x.powerPlatform 'resolved' @($res.environments)
+    Set-ScopeField $x.powerPlatform 'resolved' (Merge-ScopeResolved $x.powerPlatform.resolved $res.environments)
     Set-ScopeField $x.powerPlatform 'unresolved' @($res.unresolved)
 } | Out-Null
 
@@ -51,6 +51,12 @@ function Get-SafeName($url) {
 foreach ($url in $envs) {
     $safe = Get-SafeName $url
     Write-Host "Dataverse+: $safe ($url)" -ForegroundColor Cyan
+    $reach = Get-ScopeEnvReachability $scope $url
+    if (-not $reach.reachable) {
+        Write-Host "  [$safe] skipped: the app is not an Application User here (see the setup check)" -ForegroundColor Yellow
+        foreach ($k in 'orgplus', 'ipfirewall', 'emailprofiles', 'queues', 'mailboxes', 'fieldperms') { Save-Json @{ error = $reach.reason } "dvplus-$safe-$($script:DvReads[$k].File)-ERROR.json" | Out-Null }
+        continue
+    }
     try {
         $tok = Get-Token $url
         if (-not $tok) {

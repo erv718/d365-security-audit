@@ -50,7 +50,9 @@ Copy-Item .env.example .env    # then fill it in (see Authentication below)
 Output lands in `./output` (git-ignored): `*.json` raw evidence, `FINDINGS-summary.json`
 (also printed to the console), `assessment-report.md` and `assessment-report.json`. Run a
 single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
-`scripts/analyze.ps1` and `scripts/assessment-report.ps1` only read `./output`; they can be
+`-Log` keeps everything printed in `output/run-log.txt` (the setup check, every warning, one
+Timing line with the seconds each step took); `-Inventory <export.csv>` cross-checks a portal
+inventory export at the end. `scripts/analyze.ps1` and `scripts/assessment-report.ps1` only read `./output`; they can be
 re-run on their own after a sweep without touching the tenant. A run can be narrowed to
 chosen subscriptions, resource groups, resource readers and environments; see "Scoped runs".
 
@@ -79,7 +81,7 @@ lists what the app can see and offers numbered pickers.
   `[scoped: ...]`, and `assessment-report.json` and `FINDINGS-summary.json` rows carry a
   `Scope` field. When you summarize or advise from such a report, say which slice it covers
   and that the rest of the estate was not audited in that run.
-- The one interactive sign-in in this repository is `scripts/new-scope.ps1 -DeviceCode`, an
+- The one interactive sign-in among the scripts the audit ships is `scripts/new-scope.ps1 -DeviceCode` (the `testdata/` helpers for throwaway tenants also sign in as a person), an
   optional helper that lists what exists in order to write `scope.json`. It never runs as part
   of an audit; `run-audit.ps1` and every sweep still sign in only as the app registration.
 
@@ -298,7 +300,7 @@ limit=$(date -u -d '+90 days' +%Y-%m-%dT%H:%M:%SZ); jq -r --arg limit "$limit" '
 cannot have one, so they are excluded)
 
 ```powershell
-(Get-Content output/pp-environments.json -Raw | ConvertFrom-Json) | Where-Object { $_.properties.linkedEnvironmentMetadata -and $_.properties.environmentSku -notin 'Default','Developer','Teams' -and -not $_.properties.linkedEnvironmentMetadata.securityGroupId } | Select-Object @{n='name';e={$_.properties.displayName}}, @{n='type';e={$_.properties.environmentSku}}
+(Get-Content output/pp-environments.json -Raw | ConvertFrom-Json) | Where-Object { $_.properties.linkedEnvironmentMetadata -and $_.properties.environmentSku -notin 'Default','Developer','Teams' -and "$($_.properties.linkedEnvironmentMetadata.securityGroupId)$($_.properties.securityGroupId)" -in '', '00000000-0000-0000-0000-000000000000' } | Select-Object @{n='name';e={$_.properties.displayName}}, @{n='type';e={$_.properties.environmentSku}}
 ```
 
 ```bash
@@ -379,6 +381,14 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
 
 ## Common issues
 
+Getting help from outside the machine: `scripts/share-diagnostics.ps1` writes
+`output/diagnostics-redacted.md` (tool version, scope as counts, the setup check and warnings
+from `output/run-log.txt`, evidence files with sizes, failed pulls as status and error code,
+finding counts, check statuses; names, URLs, IPs, GUIDs and emails replaced by placeholders).
+That file is the only thing to paste outside; never the raw files or the console findings
+table. The flow, and a prompt for an AI session on the same machine, are in
+[docs/troubleshooting.md](docs/troubleshooting.md).
+
 - **403 Forbidden on a Graph identity check** (auth methods policy, security defaults, PIM,
   Intune): the app is missing that permission or its admin consent. Run
   `scripts/check-setup.ps1` to see exactly which one, then grant it and click "Grant admin
@@ -417,6 +427,17 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   needs Read on User and Security Role in that environment (see docs/permissions.md).
 - **Every Power Platform check Not checked**: the app is not registered as a management app
   (optional, see docs/permissions.md section 5), or the BAP token failed.
+- **The report says "Evidence not refreshed by this run"**: those files are older than this
+  run's setup check. A `-Skip` switch keeps the previous run's files for that plane on purpose;
+  otherwise a sweep stopped early or the scope no longer covers them. Their verdicts describe
+  the earlier state. A pull that fails now replaces its old `<name>.json` with
+  `<name>-ERROR.json`, so a stale verdict never hides a fresh failure.
+- **An environment was skipped by both Dataverse sweeps**: the setup check could not sign in
+  to it as an Application User (WhoAmI failed). One line per sweep says so, the per-area
+  `*-ERROR.json` markers carry the WhoAmI error, and the rows read Not checked with it.
+- **Two subscriptions share a display name**: the second one's files carry the first 8
+  characters of its subscription id (`arm-<name>-<id8>-*.json`), so neither overwrites the other.
+  `arm-subscriptions.json` lists every subscription the app can see.
 - **An app in `arm-*-appservice.json` has `errors` and no `config`**: that app's web config could
   not be read (locked down, or the API refused); its TLS, FTP and access-restriction checks are
   skipped for that app only. The other apps are unaffected.
@@ -460,6 +481,8 @@ jq 'length' output/pim-eligible.json; jq '[.[] | select(.assignmentType=="Assign
   never requests keys, app settings or connection secrets.
 - `scripts/inventory-check.ps1 -FromInventory <export.csv>` - cross-checks a portal inventory
   export against `arm-*-resources.json` (local files only) and writes `output/inventory-check.md`.
+- `scripts/share-diagnostics.ps1` - writes `output/diagnostics-redacted.md`, a description of the
+  last run with every identifier masked, for sharing outside the machine (local files only).
 - `scripts/analyze.ps1`, `scripts/assessment-report.ps1` - build the ranked findings and the
   29-check report from `./output`. Local processing only, no network calls.
 - `scripts/ai-analysis.ps1` - optional mitigation analysis, OFF by default (`AI_ANALYSIS` in
