@@ -436,8 +436,10 @@ table. The flow, and a prompt for an AI session on the same machine, are in
 - **The report says "Evidence not refreshed by this run"**: those files are older than this
   run's setup check. A `-Skip` switch keeps the previous run's files for that plane on purpose;
   otherwise a sweep stopped early or the scope no longer covers them. Their verdicts describe
-  the earlier state. A pull that fails now replaces its old `<name>.json` with
-  `<name>-ERROR.json`, so a stale verdict never hides a fresh failure.
+  the earlier state; the findings table prints a Note line with the count as well. A pull that
+  fails now replaces its old `<name>.json` with `<name>-ERROR.json`, so a stale verdict never
+  hides a fresh failure. The error files of a skipped plane are kept with its other files, so a
+  fact read from one (2.3 PIM unlicensed, 1.5/1.6 Intune absent) survives a `-Skip` rerun.
 - **An environment was skipped by both Dataverse sweeps**: the setup check could not sign in
   to it as an Application User (WhoAmI failed). One line per sweep says so, the per-area
   `*-ERROR.json` markers carry the WhoAmI error, and the rows read Not checked with it.

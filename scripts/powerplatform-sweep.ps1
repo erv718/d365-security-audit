@@ -49,8 +49,11 @@ try {
     $skus = @($envs | Group-Object { $_.properties.environmentSku } | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', '
     if ($skus) { Write-Host "    SKUs: $skus" -ForegroundColor Yellow }
     $managed = @($envs | Where-Object { "$($_.properties.governanceConfiguration.protectionLevel)" -eq 'Standard' }).Count
-    $withSg  = @($envs | Where-Object { $_.properties.linkedEnvironmentMetadata.securityGroupId }).Count
-    Write-Host "    Managed Environments: $managed; with a security group: $withSg" -ForegroundColor Yellow
+    # Same rule as the report's 1.3/2.4 (_common.ps1): a Teams environment is bound to its team
+    # automatically and Default cannot take a group, so neither counts as eligible.
+    $sgEligible = @($envs | Where-Object { Test-EnvSecurityGroupEligible $_ })
+    $sgBound    = @($sgEligible | Where-Object { Test-EnvSecurityGroup $_ })
+    Write-Host "    Managed Environments: $managed; with a security group: $($sgBound.Count) of $($sgEligible.Count) eligible (Sandbox, Production, Trial)" -ForegroundColor Yellow
 } catch {
     $e = Get-ErrorText $_
     Write-PpFailure 'environments' $e

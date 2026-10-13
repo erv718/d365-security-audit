@@ -617,6 +617,61 @@ function Get-IpBreadth($Range, [switch]$IgnorePrivate) {
     return $null
 }
 
+# Security groups on environments: one rule for the sweep's console line and the report's 1.3/2.4.
+# Eligible = backed by Dataverse and not Default, Developer or Teams (Microsoft allows no group on
+# Default; a Teams environment is bound to its team automatically). Bound = a group id that is set
+# and is not the all-zero GUID the API returns for "none".
+function Test-EnvSecurityGroupEligible($e) {
+    if ($null -eq $e -or $null -eq $e.properties -or $null -eq $e.properties.linkedEnvironmentMetadata) { return $false }
+    return ("$($e.properties.environmentSku)" -notin 'Default', 'Developer', 'Teams')
+}
+function Test-EnvSecurityGroup($e) {
+    if ($null -eq $e -or $null -eq $e.properties) { return $false }
+    $sg = "$($e.properties.linkedEnvironmentMetadata.securityGroupId)"
+    if (-not $sg) { $sg = "$($e.properties.securityGroupId)" }
+    return [bool]($sg -and $sg -ne '00000000-0000-0000-0000-000000000000')
+}
+
+# Conditional Access targeting. A policy that requires MFA only protects D365 when it includes all
+# users and all apps, or the Dynamics resource apps: Dataverse ('Common Data Service') and Dynamics
+# 365 ERP (Finance and Operations). One for a pilot group or a single other app does not.
+$script:D365ResourceAppIds = @('00000007-0000-0000-c000-000000000000', '00000015-0000-0000-c000-000000000000')
+function Test-CaPolicyCoversD365($p) {
+    $users = @($p.conditions.users.includeUsers | ForEach-Object { "$_" })
+    $apps  = @($p.conditions.applications.includeApplications | ForEach-Object { "$_".ToLower() })
+    $allUsers = ($users -contains 'All')
+    $d365Apps = ($apps -contains 'all') -or (@($apps | Where-Object { $script:D365ResourceAppIds -contains $_ }).Count -gt 0)
+    return [bool]($allUsers -and $d365Apps)
+}
+function Test-CaPolicyHasExclusions($p) {
+    $u = $p.conditions.users
+    return [bool](@($u.excludeUsers | Where-Object { $_ }).Count -or @($u.excludeGroups | Where-Object { $_ }).Count -or @($u.excludeRoles | Where-Object { $_ }).Count)
+}
+
+# How a Dataverse user record is marked in a list of people: a support user (accessmode 3), a
+# non-interactive account (4), a delegated admin (5: how Microsoft's or a partner's support access
+# appears) or a B2B guest. '' for an ordinary member of the organisation.
+function Get-DvUserKind($u) {
+    switch ("$($u.accessmode)") { '3' { return 'support user' } '4' { return 'non-interactive' } '5' { return 'delegated admin' } }
+    if ("$($u.domainname)" -like '*#EXT#*') { return 'guest' }
+    return ''
+}
+
+# Evidence files older than this run's setup check (scope.resolvedAt, 2 minutes of tolerance): a
+# -Skip switch, a sweep that stopped early or a narrowed scope leaves them in place, and every
+# reader of output/ says so. Returns file names; an unreadable timestamp returns none.
+function Get-StaleEvidence([string]$OutDir, $Scope) {
+    $stale = @()
+    try {
+        $runStart = [datetime]::Parse("$($Scope.resolvedAt)", [cultureinfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)
+        foreach ($f in @(Get-ChildItem $OutDir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+            if ($f.Name -in 'scope-effective.json', 'assessment-report.json', 'FINDINGS-summary.json') { continue }
+            if ($f.LastWriteTimeUtc -lt $runStart.AddMinutes(-2)) { $stale += $f.Name }
+        }
+    } catch {}
+    return $stale   # enumerated: callers wrap the call in @( ) and get a true count, empty included
+}
+
 # ARM types that a security rule reads (directly, or as part of another reader). Everything else
 # in the resource inventory is reported as inventory only (assessment report, inventory-check.ps1).
 $script:CoveredArmTypes = @('microsoft.sql/servers', 'microsoft.sql/servers/databases', 'microsoft.synapse/workspaces',
@@ -625,6 +680,13 @@ $script:CoveredArmTypes = @('microsoft.sql/servers', 'microsoft.sql/servers/data
     'microsoft.network/virtualnetworks', 'microsoft.compute/virtualmachines', 'microsoft.storage/storageaccounts',
     'microsoft.web/sites', 'microsoft.web/connections', 'microsoft.logic/workflows', 'microsoft.automation/automationaccounts',
     'microsoft.automation/automationaccounts/runbooks', 'microsoft.operationalinsights/workspaces')
+# Short but unambiguous label for an ARM type: the last segment alone collides (Log Analytics and
+# Synapse are both 'workspaces'), so keep the provider and drop only the 'Microsoft.' prefix.
+function Get-ArmTypeLabel([string]$Type) {
+    $t = "$Type" -replace '^microsoft\.', ''
+    if (-not $t) { return 'unknown' }
+    return $t
+}
 
 # Dataverse stops counting at 5,000 rows ($count=true on a standard table) and says so in the
 # totalrecordcountlimitexceeded annotation; such a count is shown as '5000+'. A file from an older

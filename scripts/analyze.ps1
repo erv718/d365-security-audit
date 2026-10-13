@@ -99,8 +99,11 @@ $sdOn = ($null -ne $sd -and $sd.isEnabled -eq $true)
 if ($null -ne $ca) {
     $on = @($ca | Where-Object { $_.state -eq 'enabled' })
     $mfaEnforced = @($ca | Where-Object { $_.state -eq 'enabled' -and ($_.grantControls.builtInControls -contains 'mfa' -or $null -ne $_.grantControls.authenticationStrength) })
-    $sev = 'HIGH'; if ($mfaEnforced.Count -gt 0 -or $sdOn) { $sev = 'LOW' }
-    Add-Finding $sev 'Conditional Access' "$(@($ca).Count) CA policies; $($on.Count) enabled; $($mfaEnforced.Count) enabled policies require MFA$(if($sdOn){'; security defaults ON (baseline MFA for everyone)'})."
+    $mfaWide = @($mfaEnforced | Where-Object { Test-CaPolicyCoversD365 $_ })
+    # No MFA policy and no security defaults: HIGH. MFA policies that reach only a pilot group or a
+    # single app: MEDIUM. At least one for all users on all apps (or the Dynamics apps): LOW.
+    $sev = 'HIGH'; if ($mfaWide.Count -gt 0 -or $sdOn) { $sev = 'LOW' } elseif ($mfaEnforced.Count -gt 0) { $sev = 'MEDIUM' }
+    Add-Finding $sev 'Conditional Access' "$(@($ca).Count) CA policies; $($on.Count) enabled; $($mfaEnforced.Count) enabled policies require MFA$(if($mfaEnforced.Count){", $($mfaWide.Count) of them for all users on all apps (or the Dynamics apps)"})$(if($mfaEnforced.Count -and -not $mfaWide.Count){'; the rest cover a pilot group or a single app, so D365 users as a whole are not covered'})$(if($sdOn){'; security defaults ON (baseline MFA for everyone)'})."
 }
 
 # --- Legacy / basic authentication in the sign-in sample ---
@@ -131,7 +134,7 @@ if ($null -ne $g -and $null -ne $g.guestCount) {
 
 # --- Directory roles ---
 $dr = Load 'directoryRoles.json'
-if ($dr) { $ga = ($dr | Where-Object { $_.role -eq 'Global Administrator' }).memberCount; if ($ga) { Add-Finding $(if($ga -gt 5){'MEDIUM'}else{'LOW'}) 'Admin roles' "$ga Global Administrator(s). Microsoft recommends fewer than 5, all with MFA." } }
+if ($dr) { $ga = ($dr | Where-Object { $_.role -eq 'Global Administrator' }).memberCount; if ($ga) { Add-Finding $(if([int]$ga -ge 5){'MEDIUM'}else{'LOW'}) 'Admin roles' "$ga Global Administrator(s). Microsoft recommends fewer than 5, all with MFA." } }
 
 # --- Dormant accounts (no sign-in for 90+ days), and dormant accounts that hold admin roles ---
 # Dormancy uses lastSuccessfulSignInDateTime (interactive or non-interactive, successful only).
@@ -246,7 +249,10 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-users.json')) {
     $users = Load $f.Name
     if ($null -eq $users) { continue }
     $sa = @($users | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 })
-    $real = @($sa | Where-Object { "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.accessmode)" -ne '3' })
+    # accessmode 3 = Support User, 5 = Delegated Admin (Microsoft's or a partner's support access, a
+    # platform placeholder that cannot get a scoped role): neither is one of the organisation's people.
+    $delegated = @($sa | Where-Object { "$($_.accessmode)" -eq '5' })
+    $real = @($sa | Where-Object { "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.accessmode)" -notin '3', '5' })
     $people = @($real | Where-Object { -not $_.applicationid })
     $appUsers = @($real | Where-Object { $_.applicationid })
     if ($appUsers.Count -and $null -eq $appOwner) {
@@ -264,11 +270,13 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-users.json')) {
         $appUsers   = @($appUsers | Where-Object { $k = "$($_.applicationid)".ToLower(); $appOwner.ContainsKey($k) -and $appOwner[$k] -and $msTenants -notcontains $appOwner[$k] })
     }
     $names = @($people | ForEach-Object { if ($_.domainname) { "$($_.domainname)" } else { "$($_.fullname)" } })
-    $dvSysAdmins[$envName] = $names
+    $dvSysAdmins[$envName] = $names   # bare UPNs: the dormant-admin cross-check matches on them
+    # Listed with a marker when the account is not a member of the organisation or not a person.
+    $shown = @($people | ForEach-Object { $n = if ($_.domainname) { "$($_.domainname)" } else { "$($_.fullname)" }; $k = Get-DvUserKind $_; if ($k) { "$n ($k)" } else { $n } })
     $sku = $skuByHost["$envName".ToLower()]
     if ($people.Count) {
         $sev = if ($people.Count -gt 3 -and $sku -eq 'Production') { 'MEDIUM' } else { 'LOW' }
-        Add-Finding $sev 'D365 admins' "[$envName$(if($sku){" ($sku)"}else{' (type not read)'})] $($people.Count) user(s) directly assigned System Administrator (roles inherited through teams not counted): $((@($names) | Select-Object -First 12) -join ', ')$(if($names.Count -gt 12){" (+$($names.Count - 12) more)"}). Keep it to a handful; give everyone else a scoped role.$(if(-not $sku -and $people.Count -gt 3){' MEDIUM if this is a Production environment.'})" 'dataverse'
+        Add-Finding $sev 'D365 admins' "[$envName$(if($sku){" ($sku)"}else{' (type not read)'})] $($people.Count) user(s) directly assigned System Administrator (roles inherited through teams not counted): $((@($shown) | Select-Object -First 12) -join ', ')$(if($shown.Count -gt 12){" (+$($shown.Count - 12) more)"}). Keep it to a handful; give everyone else a scoped role.$(if($delegated.Count){" Not counted: $($delegated.Count) delegated-admin account(s), how Microsoft's or a partner's support access appears; it cannot be given a scoped role, so end the delegation instead when it is no longer needed."})$(if(-not $sku -and $people.Count -gt 3){' MEDIUM if this is a Production environment.'})" 'dataverse'
     }
     if ($appUsers.Count -and $ownersKnown) {
         Add-Finding 'MEDIUM' 'Service identities' "[$envName] $($appUsers.Count) of your organisation's own (or consented third-party) application user(s) directly assigned System Administrator: $((@($appUsers | ForEach-Object { "$($_.fullname)" }) | Select-Object -Unique) -join ', '). Service identities should get a scoped role, not full control of the environment." 'dataverse'
@@ -432,7 +440,8 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-storage.json')) {
         if ("$($a.publicNetworkAccess)" -notin 'Disabled', 'SecuredByPerimeter' -and "$($a.defaultAction)" -eq 'Allow') { $stOpen += $a.name }
         if ($a.allowBlobPublicAccess -ne $false) { $stAnon += $a.name }
         if ($a.supportsHttpsTrafficOnly -eq $false) { $stHttp += $a.name }
-        if ("$($a.minimumTlsVersion)" -in 'TLS1_0', 'TLS1_1') { $stTls += "$($a.name) ($($a.minimumTlsVersion))" }
+        $tlsV = "$($a.minimumTlsVersion)"
+        if (-not $tlsV) { $stTls += "$($a.name) (no minimum set, which Azure reads as TLS 1.0)" } elseif ($tlsV -in 'TLS1_0', 'TLS1_1') { $stTls += "$($a.name) ($tlsV)" }
         if ($a.allowSharedKeyAccess -ne $false) { $stKey += $a.name }
         Add-AllowList 'Storage account' $a.name @(@($a.ipRules | Where-Object { $_ }) | ForEach-Object { @{ rule = "$_"; range = "$_" } }) 'azure' 'allows'
     }
@@ -440,7 +449,7 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-storage.json')) {
 if ($stOpen.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stOpen.Count) storage account(s) accept connections from all networks (public network access on, default action Allow): $($stOpen -join ', '). Data access still needs a key or a token, but anyone can try; limit them to selected networks or private endpoints." 'azure' }
 if ($stAnon.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stAnon.Count) storage account(s) allow, or do not block (setting unset on an older account), anonymous blob access on containers: $($stAnon -join ', '). Set 'Allow Blob anonymous access' to Disabled unless a container is meant to be public." 'azure' }
 if ($stHttp.Count) { Add-Finding 'MEDIUM' 'Storage' "$($stHttp.Count) storage account(s) accept plain HTTP (secure transfer not required): $($stHttp -join ', ')." 'azure' }
-if ($stTls.Count) { Add-Finding 'LOW' 'Storage' "$($stTls.Count) storage account(s) are set to accept TLS below 1.2: $($stTls -join ', '). Set the minimum to TLS 1.2." 'azure' }
+if ($stTls.Count) { Add-Finding 'LOW' 'Storage' "$($stTls.Count) storage account(s) are set to accept TLS below 1.2 (a minimum of 1.0 or 1.1, or none set): $($stTls -join ', '). Set the minimum to TLS 1.2; Microsoft announced the end of TLS 1.0 and 1.1 on Azure Storage for November 2025, so this is configuration hygiene more than live exposure." 'azure' }
 if ($stKey.Count) { Add-Finding 'LOW' 'Storage' "$($stKey.Count) storage account(s) still accept shared-key authorization (account keys and SAS tokens), which bypasses Entra ID and leaves no per-user trail: $($stKey -join ', '). Turn it off where nothing depends on it." 'azure' }
 
 # --- App Service and Function Apps (arm-*-appservice.json) ---
@@ -571,6 +580,10 @@ $order = @{ HIGH=0; MEDIUM=1; LOW=2 }
 $sorted = $findings | Sort-Object { $order[$_.Severity] }, Area
 Write-Host ""
 Write-Host "==================== FINDINGS ($($findings.Count)) ====================" -ForegroundColor Green
+# Files a -Skip switch (or a narrowed scope) left from an earlier run are still read: say so here
+# too, because this table and FINDINGS-summary.json are read without the report's header.
+$staleNow = @(Get-StaleEvidence $out $scope)
+if ($staleNow.Count) { Write-Host "Note: $($staleNow.Count) evidence file(s) come from an earlier run (a -Skip switch keeps a plane's files); findings built from them describe that earlier state. The report header names them." -ForegroundColor Yellow }
 $sorted | Format-Table Severity, Area, Finding -AutoSize -Wrap
 Save-Json $sorted 'FINDINGS-summary.json' | Out-Null
 Write-Host (Get-ScopeBanner $scope) -ForegroundColor Yellow

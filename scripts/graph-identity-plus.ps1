@@ -26,7 +26,8 @@ Write-Host 'Graph+: authentication methods policy...' -ForegroundColor Cyan
 try {
     $amp = Invoke-RestMethod -Uri "$G/policies/authenticationMethodsPolicy" -Headers $H
     Save-Json $amp 'authentication-methods-policy.json' | Out-Null
-    $enabledMethods = @($amp.authenticationMethodConfigurations | Where-Object { $_.state -eq 'enabled' } | ForEach-Object { $_.id })
+    # An external method (a third-party MFA provider) has a GUID for an id and its name in displayName.
+    $enabledMethods = @($amp.authenticationMethodConfigurations | Where-Object { $_.state -eq 'enabled' } | ForEach-Object { if ($_.displayName) { "$($_.displayName) (external method)" } else { $_.id } })
     if ($enabledMethods.Count) { Write-Host "  enabled methods: $($enabledMethods -join ', ')" -ForegroundColor Yellow }
 } catch {
     $e = Get-ErrorText $_

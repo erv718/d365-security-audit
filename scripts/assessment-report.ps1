@@ -17,14 +17,7 @@ $scope = Read-ScopeEffective
 # Evidence files older than this run's setup check come from an earlier run (a -Skip switch, a
 # sweep that stopped early, or a scope that no longer covers them). They are still read, and
 # the report says so, because a verdict from last month must never look like today's.
-$staleFiles = @()
-try {
-    $runStart = [datetime]::Parse("$($scope.resolvedAt)", [cultureinfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)
-    foreach ($f in @(Get-ChildItem $out -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
-        if ($f.Name -in 'scope-effective.json', 'assessment-report.json', 'FINDINGS-summary.json') { continue }
-        if ($f.LastWriteTimeUtc -lt $runStart.AddMinutes(-2)) { $staleFiles += $f.Name }
-    }
-} catch {}
+$staleFiles = @(Get-StaleEvidence $out $scope)   # the same rule analyze.ps1 applies to the findings
 if ($staleFiles.Count) { Write-Warning "assessment: $($staleFiles.Count) evidence file(s) are older than this run's setup check and come from an earlier run: $(($staleFiles | Select-Object -First 8) -join ', ')$(if($staleFiles.Count -gt 8){' ...'})" }
 
 # LJ: load one evidence file. Missing, empty or unparseable = $null (the check reads "Not
@@ -51,11 +44,7 @@ function Names($list, $max = 8) {
     return (($l[0..($max - 1)] -join ', ') + " (+$($l.Count - $max) more)")
 }
 function EnvSku($e)   { "$($e.properties.environmentSku)" }
-function EnvHasSg($e) {
-    $sg = "$($e.properties.linkedEnvironmentMetadata.securityGroupId)"
-    if (-not $sg) { $sg = "$($e.properties.securityGroupId)" }
-    return ($sg -and $sg -ne '00000000-0000-0000-0000-000000000000')
-}
+function EnvHasSg($e) { Test-EnvSecurityGroup $e }   # shared with the sweep's console line (_common.ps1)
 # Does any DLP policy apply to the environment named $envName? $null = cannot tell.
 # Policy objects are flat (environmentType / environments) but a properties wrapper is tolerated.
 function DlpCovers($policies, $envName) {
@@ -130,8 +119,13 @@ foreach ($f in $rolesFiles) { $roles = LJ $f.Name; if ($null -eq $roles) { conti
 $ca = LJ 'ca-policies.json'
 $caTotal     = Cnt $ca
 $caOn        = Cnt ($ca | Where-Object { $_.state -eq 'enabled' })
-$caMfa       = Cnt ($ca | Where-Object { $_.state -eq 'enabled' -and ($_.grantControls.builtInControls -contains 'mfa' -or $null -ne $_.grantControls.authenticationStrength) })
-$caCompliant = Cnt ($ca | Where-Object { $_.state -eq 'enabled' -and $_.grantControls.builtInControls -contains 'compliantDevice' })
+$caMfaPolicies = @($ca | Where-Object { $_.state -eq 'enabled' -and ($_.grantControls.builtInControls -contains 'mfa' -or $null -ne $_.grantControls.authenticationStrength) })
+$caMfa       = $caMfaPolicies.Count
+# A policy only protects D365 when it targets all users on all apps (or the Dynamics apps); one for
+# a pilot group or a single app is counted but does not make the row Aligned (Test-CaPolicyCoversD365).
+$caMfaWide   = @($caMfaPolicies | Where-Object { Test-CaPolicyCoversD365 $_ }).Count
+$caMfaExcl   = @($caMfaPolicies | Where-Object { Test-CaPolicyHasExclusions $_ }).Count
+$caCompliant = Cnt ($ca | Where-Object { $_.state -eq 'enabled' -and ($_.grantControls.builtInControls -contains 'compliantDevice' -or $_.grantControls.builtInControls -contains 'domainJoinedDevice') })
 
 $pimElig   = LJ 'pim-eligible.json'
 $pimActive = LJ 'pim-active.json'
@@ -242,13 +236,17 @@ $skuByHost = (Get-EnvSkuMap $out).sku
 $msTenants = @('f8cdef31-a31e-4b4a-93e4-5f571e91255a', '72f988bf-86f1-41af-91ab-2d7cd011db47')
 $appOwner = @{}
 foreach ($sp in @($sps)) { if ($sp -and $sp.appId) { $appOwner["$($sp.appId)".ToLower()] = "$($sp.appOwnerOrganizationId)".ToLower() } }
-$usersReadN = 0; $saPeople = 0; $saApps = 0; $saAppsNoOwner = 0; $saBusy = @(); $saReview = @(); $saUnknown = @()
+$usersReadN = 0; $saPeople = 0; $saApps = 0; $saAppsNoOwner = 0; $saDelegated = 0; $saBusy = @(); $saReview = @(); $saUnknown = @()
 foreach ($f in @(LFiles 'dv-*-users.json')) {
     $u = LJ $f.Name
     if ($null -eq $u) { continue }
     $usersReadN++
     $envName = $f.BaseName -replace '^dv-' -replace '-users$'
-    $sa = @($u | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 -and "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.accessmode)" -ne '3' })
+    $saAll = @($u | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 })
+    # accessmode 3 = Support User and 5 = Delegated Admin (Microsoft's or a partner's support access,
+    # a platform placeholder that cannot get a scoped role): neither is one of the organisation's people.
+    $saDelegated += @($saAll | Where-Object { "$($_.accessmode)" -eq '5' }).Count
+    $sa = @($saAll | Where-Object { "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.accessmode)" -notin '3', '5' })
     $pN = @($sa | Where-Object { -not $_.applicationid }).Count
     $aN = 0; $noOwnerN = 0
     foreach ($appUser in @($sa | Where-Object { $_.applicationid })) {
@@ -263,7 +261,7 @@ foreach ($f in @(LFiles 'dv-*-users.json')) {
     }
 }
 $saNote = ''
-if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people, $saApps to $(if($appOwner.Count){'your organisation''s own application users'}else{'application users (Dynamics'' own platform accounts not filtered out: the service principal list was not read)'})$(if($saAppsNoOwner){", $saAppsNoOwner to application users whose app's owner could not be told (no service principal in this tenant, or one that records no owner)"})$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})$(if($saUnknown.Count){"; more than 3 people where the environment type was not read (a Gap if Production): $($saUnknown -join ', ')"})." }
+if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people$(if($saDelegated){" (plus $saDelegated delegated-admin account(s), Microsoft's or a partner's support access, not counted)"}), $saApps to $(if($appOwner.Count){'your organisation''s own application users'}else{'application users (Dynamics'' own platform accounts not filtered out: the service principal list was not read)'})$(if($saAppsNoOwner){", $saAppsNoOwner to application users whose app's owner could not be told (no service principal in this tenant, or one that records no owner)"})$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})$(if($saUnknown.Count){"; more than 3 people where the environment type was not read (a Gap if Production): $($saUnknown -join ', ')"})." }
 else {
     $uErr = @(LFiles 'dv-*-users-ERROR.json')
     if ($uErr.Count) { $saNote = " System Administrator holders not read.$(ErrNote (ErrInfo ($uErr[0].Name -replace '-ERROR\.json$', '.json'))) Give the app user Read (Organization) on User and Security Role." }
@@ -358,7 +356,7 @@ $sqlTlsUnset = Cnt ($sqlServers | Where-Object { -not "$($_.properties.minimalTl
 # inventory (azure-exposure.ps1 / azure-plus.ps1), for 3.1, 6.1 and the coverage section.
 function LoadAll($pat) { $all = @(); $n = 0; foreach ($f in @(LFiles $pat)) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $n++; $all += @($x | Where-Object { $_ }) }; return [pscustomobject]@{ items = $all; read = $n } }
 $st = LoadAll 'arm-*-storage.json'; $stAll = @($st.items)
-$stWeak = @($stAll | Where-Object { $_.supportsHttpsTrafficOnly -eq $false -or "$($_.minimumTlsVersion)" -in 'TLS1_0', 'TLS1_1' })
+$stWeak = @($stAll | Where-Object { $_.supportsHttpsTrafficOnly -eq $false -or "$($_.minimumTlsVersion)" -in 'TLS1_0', 'TLS1_1' -or -not "$($_.minimumTlsVersion)" })   # no minimum set = TLS 1.0 allowed (Azure's default on older accounts)
 $sites = LoadAll 'arm-*-appservice.json'; $siteAll = @($sites.items)
 $siteWeak = @($siteAll | Where-Object { $_.httpsOnly -eq $false -or ($_.config -and "$($_.config.minTlsVersion)" -in '1.0', '1.1') })
 $fnApps = @($siteAll | Where-Object { "$($_.kind)" -match 'functionapp' }).Count
@@ -392,7 +390,19 @@ $checks = New-Object System.Collections.ArrayList
 # $plane says what the evidence spans: 'tenant' (Graph, Power Platform governance, manual items),
 # 'dataverse' (per environment) or 'azure' (per subscription). On a scoped run it becomes the
 # [tenant-wide] / [scoped: ...] suffix and the row's Scope field; a full run keeps the plain shape.
+# A -Skip switch leaves a plane unread; when no earlier file is on disk its rows read Not checked
+# with the usual "needs ..." hint, which is then not a permission problem. run-audit.ps1 hands the
+# switches over as SECAUDIT_SKIPPED, and the hint's own words say which plane the row needed.
+$skippedPlanes = @("$([Environment]::GetEnvironmentVariable('SECAUDIT_SKIPPED'))" -split ',' | Where-Object { $_ })
+function Get-SkippedPlaneNote([string]$ev) {
+    if (-not $skippedPlanes.Count) { return '' }
+    $plane = if ($ev -match 'admin consent|Entra ID P1|Graph') { 'graph' } elseif ($ev -match 'Reader on the subscriptions') { 'azure' } elseif ($ev -match 'Power Platform (management app|admin API)') { 'powerplatform' } elseif ($ev -match 'Application User') { 'dataverse' } else { '' }
+    $switch = @{ graph = 'SkipGraph'; azure = 'SkipAzure'; powerplatform = 'SkipPowerPlatform'; dataverse = 'SkipDataverse' }
+    if ($plane -and $skippedPlanes -contains $plane) { return " Skipped this run (-$($switch[$plane])) with no earlier evidence file on disk; not a permission problem." }
+    return ''
+}
 function Chk($no,$dom,$check,$status,$ev,$plane = 'tenant') {
+    if ($status -eq 'Not checked') { $ev = "$ev$(Get-SkippedPlaneNote $ev)" }
     $row = [ordered]@{ No=$no; Domain=$dom; Check=$check; Status=$status; Evidence=$ev }
     if ($scope.partial) { $tag = Get-ScopeTag $scope $plane; $row.Evidence = "$ev [$tag]"; $row.Scope = $tag }
     [void]$checks.Add([pscustomobject]$row)
@@ -435,8 +445,9 @@ if (-not (Have $ca)) { $s14 = 'Not checked'; $e14 = 'Conditional Access policies
 elseif ($caMfa -eq 0 -and $sdOn) { $s14 = 'Partial'; $e14 = "Security defaults are ON (baseline MFA for everyone); $caTotal Conditional Access policies, none enforcing MFA (CA needs Entra ID P1)." }
 elseif ($caTotal -eq 0) { $s14 = 'Gap'; $e14 = "No Conditional Access policies exist$(if(Have $secDef){' and security defaults are off'}else{' (security defaults not read)'})." }
 elseif ($caMfa -eq 0) { $s14 = 'Gap'; $e14 = "$caTotal policies, $caOn enabled, none enforce MFA." }
-else { $s14 = 'Aligned'; $e14 = "$caTotal policies, $caOn enabled, $caMfa enforce MFA." }
-if ((Have $secDef) -and $s14 -ne 'Partial') { $e14 += " Security defaults: $(if($sdOn){'ON'}else{'off'})." }
+elseif ($caMfaWide -eq 0) { $s14 = 'Partial'; $e14 = "$caTotal policies, $caOn enabled, $caMfa enforce MFA, but none of those targets all users on all apps (or the Dynamics apps): a pilot group or a single app is covered, D365 users as a whole are not. Review who and what each MFA policy includes." }
+else { $s14 = 'Aligned'; $e14 = "$caTotal policies, $caOn enabled, $caMfa enforce MFA, $caMfaWide of them for all users on all apps (or the Dynamics apps)$(if($caMfaExcl){"; $caMfaExcl of the MFA policies exclude users, groups or roles, to review"})." }
+if ((Have $secDef) -and -not ($caMfa -eq 0 -and $sdOn)) { $e14 += " Security defaults: $(if($sdOn){'ON'}else{'off'})." }
 if (Have $amp) { $e14 += " SMS/voice sign-in enabled in the Authentication methods policy: $(if($weakOn.Count){$weakOn -join ', '}else{'no'})$(if("$($amp.policyMigrationState)" -ne 'migrationComplete'){' (legacy MFA/SSPR settings not migrated, so they may still allow SMS/voice; not read)'})." }
 if (Have $namedLoc) { $e14 += " $(Cnt $namedLoc) named location(s)." }
 Chk '1.4' '1 Entra ID' 'Conditional Access' $s14 $e14
@@ -451,7 +462,9 @@ Chk '1.5' '1 Entra ID' 'Intune device management' $s15 $e15
 if ($intuneAbsent) { $s16 = 'Gap'; $e16 = 'Intune is not provisioned in this tenant, so device compliance cannot be required for D365 access.' }
 elseif (-not (Have $intune)) { $s16 = 'Not checked'; $e16 = $intuneHint }
 elseif ($intuneN -eq 0) { $s16 = 'Gap'; $e16 = 'No Intune compliance policy exists, so no device state can be required for D365 access.' }
-else { $s16 = 'Partial'; $e16 = "$intuneN Intune compliance policies; $caCompliant enabled Conditional Access policies require a compliant device$(if($caCompliant -eq 0){' - nothing ties device compliance to access, so it is not enforced for D365'}else{' (confirm they target Dataverse/D365)'})." }
+elseif (-not (Have $ca)) { $s16 = 'Not checked'; $e16 = "$intuneN Intune compliance policies; Conditional Access policies not read, so whether a compliant device is required for D365 access is unknown." }
+elseif ($caCompliant -eq 0) { $s16 = 'Gap'; $e16 = "$intuneN Intune compliance policies, but no enabled Conditional Access policy requires a compliant or hybrid-joined device: nothing ties device compliance to access, so it is not enforced for D365." }
+else { $s16 = 'Partial'; $e16 = "$intuneN Intune compliance policies; $caCompliant enabled Conditional Access policies require a compliant or hybrid-joined device (confirm they target Dataverse/D365)." }
 Chk '1.6' '1 Entra ID' 'Device compliance enforced for D365' $s16 $e16
 
 # Domain 2 - Authentication
@@ -540,7 +553,12 @@ if ($sentinelReadN -eq 0) { $s43 = 'Not checked'; $e43 = 'Azure Log Analytics/Se
 elseif ($sentinelOn) { $s43 = 'Partial'; $e43 = "Sentinel enabled on at least one of $wsN Log Analytics workspace(s); whether Power Platform/Dataverse logs are ingested is not verified." }
 else { $s43 = 'Gap'; $e43 = "No Sentinel onboarding on $wsN Log Analytics workspace(s) across $($sentinelReadN) subscription(s)." }
 Chk '4.3' '4 Auditing' 'SIEM / monitoring over Power Platform' $s43 ($e43 + $logNote) 'azure'
-Chk '4.4' '4 Auditing' 'Purview / Sentinel integration' $(if($sentinelOn){'Partial'}else{'Not checked'}) $(if($sentinelOn){'Sentinel state read; Purview audit to confirm: purview.microsoft.com > Solutions > Audit.'}else{'Sentinel not found or not read; Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit.'}) 'azure'
+# Not checked only when no Sentinel file was read; read-and-off is the same Gap 4.3 reports. The
+# Purview half has no API and stays a manual confirmation in every branch.
+if ($sentinelReadN -eq 0) { $s44 = 'Not checked'; $e44 = 'Azure Log Analytics/Sentinel not read (needs Reader on the subscriptions); Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit.' }
+elseif ($sentinelOn) { $s44 = 'Partial'; $e44 = 'Sentinel onboarded (see 4.3); whether Dataverse or Power Platform logs reach it, and the Purview audit, to confirm manually: purview.microsoft.com > Solutions > Audit.' }
+else { $s44 = 'Gap'; $e44 = "Sentinel read: $(if($wsN -eq 0){"no Log Analytics workspace exists in the $sentinelReadN subscription(s) read, so nothing is onboarded"}else{"not onboarded on any of $wsN Log Analytics workspace(s) in $sentinelReadN subscription(s)"}) (see 4.3). Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit." }
+Chk '4.4' '4 Auditing' 'Purview / Sentinel integration' $s44 $e44 'azure'
 
 # Domain 5 - Security settings
 if ($rolesEnvN -eq 0) { $s51 = 'Not checked'; $e51 = 'Security roles not read: no environment in this run was readable as an Application User with Read on Security Role (the setup check names the environment and the missing table).' }
@@ -672,8 +690,8 @@ if ($inv.read -gt 0) {
     # ARM types a security rule reads ($CoveredArmTypes, _common.ps1); the rest are listed as inventory only.
     $covered = $script:CoveredArmTypes
     $byType = @($inv.items | Group-Object { "$($_.type)".ToLower() } | Sort-Object @{ Expression = 'Count'; Descending = $true }, Name)
-    $chk = @($byType | Where-Object { $covered -contains $_.Name } | ForEach-Object { "$(("$($_.Group[0].type)" -split '/')[-1]) ($($_.Count))" })
-    $only = @($byType | Where-Object { $covered -notcontains $_.Name } | ForEach-Object { "$(("$($_.Group[0].type)" -split '/')[-1]) ($($_.Count))" })
+    $chk = @($byType | Where-Object { $covered -contains $_.Name } | ForEach-Object { "$(Get-ArmTypeLabel $_.Group[0].type) ($($_.Count))" })
+    $only = @($byType | Where-Object { $covered -notcontains $_.Name } | ForEach-Object { "$(Get-ArmTypeLabel $_.Group[0].type) ($($_.Count))" })
     $md += "- $(@($inv.items).Count) resource(s) of $($byType.Count) type(s) visible to the app in $($inv.read) subscription(s) read (output/arm-*-resources.json)."
     $md += "- Checked by a security rule: $(if($chk.Count){$chk -join ', '}else{'none'})."
     $md += "- Inventoried only (no security rule yet): $(if($only.Count){$only -join ', '}else{'none'})."

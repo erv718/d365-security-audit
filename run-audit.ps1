@@ -51,6 +51,7 @@ $scopeVars = @{
     SECAUDIT_ENVIRONMENTS    = ($Environments -join ',')
     SECAUDIT_TYPES           = ($Types -join ',')
     SECAUDIT_STRICT_SCOPE    = $(if ($StrictScope) { '1' } else { '' })
+    SECAUDIT_SKIPPED         = (@($(if ($SkipGraph) { 'graph' }), $(if ($SkipPowerPlatform) { 'powerplatform' }), $(if ($SkipDataverse) { 'dataverse' }), $(if ($SkipAzure) { 'azure' })) | Where-Object { $_ }) -join ','
 }
 $previous = @{}
 foreach ($k in @($scopeVars.Keys)) {
@@ -59,10 +60,19 @@ foreach ($k in @($scopeVars.Keys)) {
 }
 
 try {
-    # A *-ERROR.json diagnoses one run. Clear the previous run's (local files only) so a stale one
-    # can never turn into a verdict now; any pull that fails again this run writes its own.
+    # A *-ERROR.json diagnoses one run. Clear the previous run's (local files only) for every plane
+    # this run sweeps, so a stale one can never turn into a verdict now; any pull that fails again
+    # writes its own. A plane a -Skip switch leaves out keeps all its files, failures included: its
+    # verdicts describe that earlier run (the report header says so), and a licence or provisioning
+    # fact read from an error (PIM unlicensed, no Intune) must not turn into "not read".
     $outDir = Join-Path $here 'output'
-    if (Test-Path $outDir) { Get-ChildItem $outDir -Filter '*-ERROR.json' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $outDir) {
+        foreach ($errFile in @(Get-ChildItem $outDir -Filter '*-ERROR.json' -File -ErrorAction SilentlyContinue)) {
+            $n = $errFile.Name
+            $keep = if ($n -like 'arm-*') { $SkipAzure } elseif ($n -like 'pp-*') { $SkipPowerPlatform } elseif ($n -like 'dv-*' -or $n -like 'dvplus-*') { $SkipDataverse } else { $SkipGraph }   # the rest come from the two Graph sweeps
+            if (-not $keep) { Remove-Item $errFile.FullName -Force -ErrorAction SilentlyContinue }
+        }
+    }
     $transcript = $false
     if ($Log) {
         if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Force $outDir | Out-Null }
