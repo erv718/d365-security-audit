@@ -111,11 +111,14 @@ security role.
 | Queue | queues, and how many receive email (3.6) |
 
 Entity is not listed with the other tables: it sits in the role editor's **Customization** group.
-Search for `Entity` and pick the row whose **Name** column reads `entity` (not "Entity Key" or
-"Entity Relationship"); the search box matches table names, not group names. (Microsoft's
-privilege table lists `prvReadEntity` as Entity in the Customization tab:
+Type `Entity` in the search box and press Enter (the box matches table names, not group names;
+keep the filter on all privileges, not assigned only). The row you want is the one whose
+**Table** column reads exactly `Entity`, one word: not "Entity Key", "Entity Map" or "Entity
+Relationship". With **Compact grid view** off the editor also shows a **Name** column with the
+logical name, `entity`, which settles any doubt. (Microsoft's privilege table lists
+`prvReadEntity` as Entity in the Customization tab:
 <https://learn.microsoft.com/en-us/troubleshoot/power-platform/dataverse/d365-app-outlook/privilege-error-occurs-when-using-dynamics-365-app-for-outlook>;
-the editor's tabs, groups and Name column:
+the editor's groups, columns and search box:
 <https://learn.microsoft.com/en-us/power-platform/admin/security-roles-privileges>.)
 
 Team and Business Unit are not needed (harmless if already ticked).
