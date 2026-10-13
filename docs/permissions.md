@@ -111,7 +111,8 @@ security role.
 | Queue | queues, and how many receive email (3.6) |
 
 Entity is not listed with the other tables: it sits in the role editor's **Customization** group.
-With **Compact Grid View** off, the **Name** column of that row reads `entity`. (Microsoft's
+Search for `Entity` and pick the row whose **Name** column reads `entity` (not "Entity Key" or
+"Entity Relationship"); the search box matches table names, not group names. (Microsoft's
 privilege table lists `prvReadEntity` as Entity in the Customization tab:
 <https://learn.microsoft.com/en-us/troubleshoot/power-platform/dataverse/d365-app-outlook/privilege-error-occurs-when-using-dynamics-365-app-for-outlook>;
 the editor's tabs, groups and Name column:
