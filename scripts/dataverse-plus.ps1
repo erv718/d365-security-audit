@@ -54,7 +54,7 @@ foreach ($url in $envs) {
     $reach = Get-ScopeEnvReachability $scope $url
     if (-not $reach.reachable) {
         Write-Host "  [$safe] skipped: the app is not an Application User here (see the setup check)" -ForegroundColor Yellow
-        foreach ($k in 'orgplus', 'ipfirewall', 'emailprofiles', 'queues', 'mailboxes', 'fieldperms') { Save-Json @{ error = $reach.reason } "dvplus-$safe-$($script:DvReads[$k].File)-ERROR.json" | Out-Null }
+        foreach ($k in 'orgplus', 'ipfirewall', 'emailprofiles', 'queues', 'mailboxes', 'mailsync', 'fieldperms') { Save-Json @{ error = $reach.reason } "dvplus-$safe-$($script:DvReads[$k].File)-ERROR.json" | Out-Null }
         continue
     }
     try {
@@ -112,8 +112,10 @@ foreach ($url in $envs) {
             try {
                 $r = Invoke-RestMethod -Uri "$base$($script:DvReads.queues.Path)" -Headers $Hc
                 $cnt = $r.'@odata.count'
-                Save-Json ([ordered]@{ '@odata.count' = $cnt; sample = @($r.value) }) "dvplus-$safe-queues.json" | Out-Null
-                if ($null -ne $cnt) { $sumQueues = $cnt } else { $sumQueues = @($r.value).Count }
+                # Dataverse stops counting at 5,000 and says so in this annotation.
+                $capped = ($r.'@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded' -eq $true)
+                Save-Json ([ordered]@{ '@odata.count' = $cnt; capped = $capped; sample = @($r.value) }) "dvplus-$safe-queues.json" | Out-Null
+                if ($null -ne $cnt) { $sumQueues = Format-DvCount $cnt $capped } else { $sumQueues = @($r.value).Count }
             } catch {
                 $e = Get-ErrorText $_
                 Write-Warning "  [$safe] queues failed: $e"
@@ -124,12 +126,30 @@ foreach ($url in $envs) {
             try {
                 $r = Invoke-RestMethod -Uri "$base$($script:DvReads.mailboxes.Path)" -Headers $Hc
                 $cnt = $r.'@odata.count'
-                Save-Json ([ordered]@{ '@odata.count' = $cnt; sample = @($r.value) }) "dvplus-$safe-mailboxes.json" | Out-Null
-                if ($null -ne $cnt) { $sumMailbox = $cnt } else { $sumMailbox = @($r.value).Count }
+                $capped = ($r.'@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded' -eq $true)
+                Save-Json ([ordered]@{ '@odata.count' = $cnt; capped = $capped; sample = @($r.value) }) "dvplus-$safe-mailboxes.json" | Out-Null
+                if ($null -ne $cnt) { $sumMailbox = Format-DvCount $cnt $capped } else { $sumMailbox = @($r.value).Count }
             } catch {
                 $e = Get-ErrorText $_
                 Write-Warning "  [$safe] mailboxes failed: $e"
                 Save-Json @{ error = $e } "dvplus-$safe-mailboxes-ERROR.json" | Out-Null
+            }
+
+            # --- Mail flow: is server-side sync actually in use? -------------------
+            # Every user gets a mailbox record and every team a queue, so the totals above say
+            # nothing about integration. These count the mailboxes approved to sync through
+            # server-side sync and the active queues that receive email (counts only, no names).
+            try {
+                $a = Invoke-RestMethod -Uri "$base$($script:DvReads.mailsync.Path)" -Headers $Hc
+                $b = Invoke-RestMethod -Uri "$base$($script:DvReads.queuemail.Path)" -Headers $Hc
+                Save-Json ([ordered]@{
+                    mailboxesSyncing = $a.'@odata.count'; mailboxesCapped = ($a.'@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded' -eq $true)
+                    queuesReceivingEmail = $b.'@odata.count'; queuesCapped = ($b.'@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded' -eq $true)
+                }) "dvplus-$safe-mailflow.json" | Out-Null
+            } catch {
+                $e = Get-ErrorText $_
+                Write-Warning "  [$safe] mail flow failed: $e"
+                Save-Json @{ error = $e } "dvplus-$safe-mailflow-ERROR.json" | Out-Null
             }
 
             # --- Field permissions (field-level security in use) -----------------

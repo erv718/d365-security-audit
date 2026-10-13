@@ -114,7 +114,8 @@ planes, so the run is fully unattended. The app needs these, all read-only:
 - Azure: the `Reader` role at each subscription scope
 - Dataverse: an Application User with a custom read-only security role in each environment:
   Read at Organization level on Organization, Security Role, User, Solution, Publisher, Field
-  Security Profile, Email Server Profile, Mailbox and Queue
+  Security Profile, Email Server Profile, Mailbox, Queue and Entity (Entity sits in the role
+  editor's Customization group, not with the others; it gates the per-table audit flags)
 - Power Platform admin API (optional): `New-PowerAppManagementApp`. It is NOT read-only: it gives
   the app Power Platform Administrator rights. Without it, pick environments with
   `-Environments`; environment security groups (1.3, 2.4) and DLP (5.3) then read Not checked
@@ -425,6 +426,9 @@ table. The flow, and a prompt for an AI session on the same machine, are in
   per-user sign-in activity needs AuditLog.Read.All and an Entra ID P1 licence in the tenant.
 - **System Administrator holders missing**: `dv-*-users-ERROR.json` exists. The app user's role
   needs Read on User and Security Role in that environment (see docs/permissions.md).
+- **Per-table audit flags missing**: `dv-*-entities-ERROR.json` naming `prvReadEntity` (a
+  `SecLib::CheckPrivilege failed` 403). Add Read (Organization) on Entity, in the role editor's
+  Customization group; the setup check names it the same way.
 - **Every Power Platform check Not checked**: the app is not registered as a management app
   (optional, see docs/permissions.md section 5), or the BAP token failed.
 - **The report says "Evidence not refreshed by this run"**: those files are older than this

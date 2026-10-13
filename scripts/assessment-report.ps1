@@ -182,10 +182,26 @@ $logicFiles = @(LFiles 'arm-*-logicapps.json'); $logicReadN = 0; $logicApps = 0
 foreach ($f in $logicFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $logicReadN++; $logicApps += Cnt $x }
 $emailFiles = @(LFiles 'dvplus-*-emailprofiles.json'); $emailReadN = 0; $emailProfiles = 0
 foreach ($f in $emailFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $emailReadN++; $emailProfiles += Cnt ($x | Where-Object { $_ -and ($null -eq $_.statecode -or "$($_.statecode)" -eq '0') }) }   # active profiles only
-$mailboxFiles = @(LFiles 'dvplus-*-mailboxes.json'); $mailboxN = 0
-foreach ($f in $mailboxFiles) { $m = First (LJ $f.Name); if ($m -and $null -ne $m.'@odata.count') { $mailboxN += [int]$m.'@odata.count' } elseif ($m) { $mailboxN += Cnt $m.sample } }
-$queueFiles = @(LFiles 'dvplus-*-queues.json'); $queueN = 0
-foreach ($f in $queueFiles) { $q = First (LJ $f.Name); if ($q -and $null -ne $q.'@odata.count') { $queueN += [int]$q.'@odata.count' } elseif ($q) { $queueN += Cnt $q.sample } }
+# Mailbox and queue totals (Dataverse stops counting at 5,000; 'capped' marks that), and the mail
+# flow counts that say whether server-side sync is actually in use.
+function DvCapped($o) {
+    $flag = $null
+    if ($o.PSObject.Properties.Name -contains 'capped') { $flag = $o.capped } elseif ($o.PSObject.Properties.Name -contains 'limitExceeded') { $flag = $o.limitExceeded }
+    return ((Format-DvCount $o.'@odata.count' $flag) -like '*+')
+}
+$mailboxFiles = @(LFiles 'dvplus-*-mailboxes.json'); $mailboxN = 0; $mailboxCap = $false
+foreach ($f in $mailboxFiles) { $m = First (LJ $f.Name); if ($m -and $null -ne $m.'@odata.count') { $mailboxN += [int]$m.'@odata.count'; if (DvCapped $m) { $mailboxCap = $true } } elseif ($m) { $mailboxN += Cnt $m.sample } }
+$queueFiles = @(LFiles 'dvplus-*-queues.json'); $queueN = 0; $queueCap = $false
+foreach ($f in $queueFiles) { $q = First (LJ $f.Name); if ($q -and $null -ne $q.'@odata.count') { $queueN += [int]$q.'@odata.count'; if (DvCapped $q) { $queueCap = $true } } elseif ($q) { $queueN += Cnt $q.sample } }
+$mailboxText = Format-DvCount $mailboxN $mailboxCap; $queueText = Format-DvCount $queueN $queueCap
+$flowReadN = 0; $syncN = 0; $syncCap = $false; $qMailN = 0; $qMailCap = $false
+foreach ($f in @(LFiles 'dvplus-*-mailflow.json')) {
+    $mf = First (LJ $f.Name)
+    if (-not $mf -or -not ($mf.PSObject.Properties.Name -contains 'mailboxesSyncing')) { continue }
+    $flowReadN++
+    $syncN += [int]$mf.mailboxesSyncing; if ($mf.mailboxesCapped -eq $true) { $syncCap = $true }
+    $qMailN += [int]$mf.queuesReceivingEmail; if ($mf.queuesCapped -eq $true) { $qMailCap = $true }
+}
 # Column-level security in use = field permissions, or a field security profile other than the
 # built-in 'System Administrator' one that every environment has. Counted per environment.
 $fpFiles = @(LFiles 'dvplus-*-fieldpermissions.json') + @(LFiles 'dv-*-fieldsec.json'); $fpEnvs = @{}; $fieldPerms = 0
@@ -217,14 +233,16 @@ foreach ($f in @(LFiles 'dv-*-entities.json')) {
     }
 }
 
-# Who holds System Administrator (dv-<env>-users.json): people vs the organisation's own
-# application users; built-in and Microsoft first-party '#' accounts excluded.
+# Who holds System Administrator (dv-<env>-users.json): people, the organisation's own application
+# users (a service principal with a non-Microsoft owner), and application users whose app has no
+# service principal or no recorded owner, counted apart. Built-in accounts and Microsoft-owned
+# application users are excluded. The '#' prefix is not a Microsoft marker.
 # Environment type: the Power Platform inventory, else the environment's own report (orginfo).
 $skuByHost = (Get-EnvSkuMap $out).sku
 $msTenants = @('f8cdef31-a31e-4b4a-93e4-5f571e91255a', '72f988bf-86f1-41af-91ab-2d7cd011db47')
 $appOwner = @{}
 foreach ($sp in @($sps)) { if ($sp -and $sp.appId) { $appOwner["$($sp.appId)".ToLower()] = "$($sp.appOwnerOrganizationId)".ToLower() } }
-$usersReadN = 0; $saPeople = 0; $saApps = 0; $saBusy = @(); $saReview = @(); $saUnknown = @()
+$usersReadN = 0; $saPeople = 0; $saApps = 0; $saAppsNoOwner = 0; $saBusy = @(); $saReview = @(); $saUnknown = @()
 foreach ($f in @(LFiles 'dv-*-users.json')) {
     $u = LJ $f.Name
     if ($null -eq $u) { continue }
@@ -232,15 +250,20 @@ foreach ($f in @(LFiles 'dv-*-users.json')) {
     $envName = $f.BaseName -replace '^dv-' -replace '-users$'
     $sa = @($u | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 -and "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.accessmode)" -ne '3' })
     $pN = @($sa | Where-Object { -not $_.applicationid }).Count
-    $aN = @($sa | Where-Object { $_.applicationid -and $msTenants -notcontains $appOwner["$($_.applicationid)".ToLower()] }).Count
-    $saPeople += $pN; $saApps += $aN
+    $aN = 0; $noOwnerN = 0
+    foreach ($appUser in @($sa | Where-Object { $_.applicationid })) {
+        if ($appOwner.Count -eq 0) { $aN++; continue }   # owners not read: every application user counts, with the caveat below
+        $k = "$($appUser.applicationid)".ToLower(); $o = $appOwner[$k]
+        if (-not $appOwner.ContainsKey($k) -or -not $o) { $noOwnerN++ } elseif ($msTenants -notcontains $o) { $aN++ }
+    }
+    $saPeople += $pN; $saApps += $aN; $saAppsNoOwner += $noOwnerN
     if ($pN -gt 3) {
         $sk = $skuByHost[$envName.ToLower()]
         if ($sk -eq 'Production') { $saBusy += "$envName ($pN)" } elseif ($sk) { $saReview += "$envName ($pN)" } else { $saUnknown += "$envName ($pN)" }
     }
 }
 $saNote = ''
-if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people, $saApps to non-Microsoft application users$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})$(if($saUnknown.Count){"; more than 3 people where the environment type was not read (a Gap if Production): $($saUnknown -join ', ')"})." }
+if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people, $saApps to $(if($appOwner.Count){'your organisation''s own application users'}else{'application users (Dynamics'' own platform accounts not filtered out: the service principal list was not read)'})$(if($saAppsNoOwner){", $saAppsNoOwner to application users whose app's owner could not be told (no service principal in this tenant, or one that records no owner)"})$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})$(if($saUnknown.Count){"; more than 3 people where the environment type was not read (a Gap if Production): $($saUnknown -join ', ')"})." }
 else {
     $uErr = @(LFiles 'dv-*-users-ERROR.json')
     if ($uErr.Count) { $saNote = " System Administrator holders not read.$(ErrNote (ErrInfo ($uErr[0].Name -replace '-ERROR\.json$', '.json'))) Give the app user Read (Organization) on User and Security Role." }
@@ -482,9 +505,15 @@ if ($emailReadN -eq 0) { $s35 = 'Not checked'; $e35 = 'Email server profiles not
 elseif ($emailProfiles -gt 0) { $s35 = 'Partial'; $e35 = "$emailProfiles email server profile(s) across $($emailReadN) environment(s); server-side sync auth (OAuth vs basic) to confirm per profile." }
 else { $s35 = 'Not in use'; $e35 = "0 email server profiles in $($emailReadN) environment(s)." }
 Chk '3.5' '3 Data security' 'Record sync / Outlook' $s35 $e35 'dataverse'
-if ($emailReadN -eq 0) { $s36 = 'Not checked'; $e36 = 'Mailboxes/queues not read (no environment reachable as an Application User).' }
-elseif ($emailProfiles -le $emailReadN) { $s36 = 'Not in use'; $e36 = "Only the default email profile per environment ($emailProfiles across $($emailReadN)); $mailboxN mailbox record(s), $queueN queue(s) - no custom mailbox integration in active use." }
-else { $s36 = 'Partial'; $e36 = "$emailProfiles email profiles across $($emailReadN) environment(s) (more than the default), $mailboxN mailbox record(s), $queueN queue(s); review which integrations are approved." }
+# Every user has a mailbox record and every team a queue, so the totals prove nothing; the mail
+# flow counts (approved server-side sync mailboxes, queues receiving email) decide.
+if ($flowReadN -gt 0) {
+    if ($syncN -gt 0 -or $qMailN -gt 0) { $s36 = 'Partial'; $e36 = "Server-side sync in use in $flowReadN environment(s) read: $syncN$(if($syncCap){'+'}) mailbox(es) approved and set to sync email through server-side sync, $qMailN$(if($qMailCap){'+'}) active queue(s) receiving email ($mailboxText mailbox record(s) and $queueText queue(s) in total). Review that the email server profile uses modern authentication and that only expected mailboxes and queues are approved (PPAC > Environments > (env) > Settings > Email > Mailboxes)." }
+    else { $s36 = 'Not in use'; $e36 = "No mailbox approved for server-side sync and no queue receiving email in $flowReadN environment(s) read ($mailboxText mailbox record(s) and $queueText queue(s) exist, as every user and team gets one)." }
+}
+elseif ($emailReadN -eq 0) { $s36 = 'Not checked'; $e36 = 'Mailboxes/queues not read (no environment reachable as an Application User).' }
+elseif ($emailProfiles -eq 0) { $s36 = 'Not in use'; $e36 = "No active email server profile in $($emailReadN) environment(s) read, so no mailbox can sync through server-side sync." }
+else { $s36 = 'Not checked'; $e36 = "$emailProfiles active email server profile(s) across $($emailReadN) environment(s), $mailboxText mailbox record(s), $queueText queue(s); whether any mailbox actually syncs through them was not read." }
 Chk '3.6' '3 Data security' 'Mailbox / queue integration' $s36 $e36 'dataverse'
 
 # Domain 4 - Auditing & monitoring
@@ -574,7 +603,7 @@ $errSource = @{
     '2.1' = @('applications.json'); '2.2' = @('applications.json', 'servicePrincipals.json'); '6.2' = @('applications.json')
     '2.3' = @('pim-eligible.json')
     '3.4' = $dvOrg; '4.1' = $dvOrg; '4.2' = $dvOrg
-    '3.5' = @('dvplus-*-emailprofiles.json'); '3.6' = @('dvplus-*-emailprofiles.json')
+    '3.5' = @('dvplus-*-emailprofiles.json'); '3.6' = @('dvplus-*-mailflow.json', 'dvplus-*-emailprofiles.json')
     '4.3' = @('arm-*-sentinel.json'); '4.4' = @('arm-*-sentinel.json')
     '5.2' = @('dvplus-*-fieldpermissions.json', 'dv-*-fieldsec.json')
     '5.3' = @('pp-dlp-policies.json')

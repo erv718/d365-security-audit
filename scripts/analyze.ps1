@@ -223,6 +223,7 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-solutions.json')) {
     $um = @($sols | Where-Object { $_ -and $_.ismanaged -eq $false -and $_.isvisible -eq $true -and "$($_.uniquename)" -notin 'Default', 'Active', 'Basic' -and "$($_.friendlyname)" -ne 'Common Data Services Default Solution' })
     if (-not $um.Count) { continue }
     $umNames = (@($um | ForEach-Object { "$($_.friendlyname)" }) | Select-Object -First 10) -join ', '
+    if ($um.Count -gt 10) { $umNames += " (+$($um.Count - 10) more)" }
     if ($sku) { Add-Finding 'MEDIUM' 'Solutions' "[$envName] $($um.Count) unmanaged solution(s) in a Production environment: $umNames. Production should only receive managed solutions through a pipeline." 'dataverse' }
     else { Add-Finding 'LOW' 'Solutions' "[$envName] $($um.Count) unmanaged solution(s): $umNames. The environment type was not read; if this is Production it is MEDIUM (Production should only receive managed solutions through a pipeline)." 'dataverse' }
 }
@@ -230,9 +231,12 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-solutions.json')) {
 # --- Dataverse: who holds System Administrator, per environment ---
 # dv-<env>-users.json = enabled users with their DIRECTLY assigned roles; a role inherited
 # through a team is not visible here, and the findings say so. Left out: built-in accounts
-# (SYSTEM, INTEGRATION, support users) and Microsoft-owned application users, identified by the
-# owner tenant of the app's service principal (dual-write, first-party apps). The '#' in front
-# of an application user's name is NOT a Microsoft marker: Dataverse adds it to every app user.
+# (SYSTEM, INTEGRATION, support users) and Microsoft-owned application users: the app's service
+# principal is owned by a Microsoft tenant, or the app has no service principal in this tenant at
+# all (Dataverse's own platform users; an organisation's own or consented apps always have one).
+# Without the service principal list (identity read skipped or failed) they cannot be told
+# apart, and the finding says so at LOW. The '#' in front of an application user's name is NOT a
+# Microsoft marker: Dataverse adds it to every app user.
 # More than 3 people is MEDIUM in Production and LOW elsewhere (makers often hold it in dev).
 $msTenants = @('f8cdef31-a31e-4b4a-93e4-5f571e91255a', '72f988bf-86f1-41af-91ab-2d7cd011db47')
 $appOwner = $null
@@ -250,7 +254,15 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-users.json')) {
         $spAll2 = Load 'servicePrincipals.json'
         foreach ($sp in @($spAll2)) { if ($sp -and $sp.appId) { $appOwner["$($sp.appId)".ToLower()] = "$($sp.appOwnerOrganizationId)".ToLower() } }
     }
-    $appUsers = @($appUsers | Where-Object { $msTenants -notcontains $appOwner["$($_.applicationid)".ToLower()] })
+    # Three groups once owners were read: Microsoft-owned (dropped), a known non-Microsoft owner
+    # (the organisation's own or a consented third-party app), and no owner on record (no service
+    # principal in this tenant, or one with an empty owner: a platform service or a deleted app).
+    $ownersKnown = ($appOwner.Count -gt 0)
+    $appNoOwner = @()
+    if ($ownersKnown) {
+        $appNoOwner = @($appUsers | Where-Object { $k = "$($_.applicationid)".ToLower(); -not $appOwner.ContainsKey($k) -or -not $appOwner[$k] })
+        $appUsers   = @($appUsers | Where-Object { $k = "$($_.applicationid)".ToLower(); $appOwner.ContainsKey($k) -and $appOwner[$k] -and $msTenants -notcontains $appOwner[$k] })
+    }
     $names = @($people | ForEach-Object { if ($_.domainname) { "$($_.domainname)" } else { "$($_.fullname)" } })
     $dvSysAdmins[$envName] = $names
     $sku = $skuByHost["$envName".ToLower()]
@@ -258,8 +270,14 @@ foreach ($f in @(Get-ChildItem $out -Filter 'dv-*-users.json')) {
         $sev = if ($people.Count -gt 3 -and $sku -eq 'Production') { 'MEDIUM' } else { 'LOW' }
         Add-Finding $sev 'D365 admins' "[$envName$(if($sku){" ($sku)"}else{' (type not read)'})] $($people.Count) user(s) directly assigned System Administrator (roles inherited through teams not counted): $((@($names) | Select-Object -First 12) -join ', ')$(if($names.Count -gt 12){" (+$($names.Count - 12) more)"}). Keep it to a handful; give everyone else a scoped role.$(if(-not $sku -and $people.Count -gt 3){' MEDIUM if this is a Production environment.'})" 'dataverse'
     }
-    if ($appUsers.Count) {
-        Add-Finding 'MEDIUM' 'Service identities' "[$envName] $($appUsers.Count) non-Microsoft application user(s) directly assigned System Administrator: $((@($appUsers | ForEach-Object { "$($_.fullname)" }) | Select-Object -Unique) -join ', '). Service identities should get a scoped role, not full control of the environment.$(if($appOwner.Count -eq 0){' Service principal owners were not read, so Microsoft-owned apps could not be filtered out.'})" 'dataverse'
+    if ($appUsers.Count -and $ownersKnown) {
+        Add-Finding 'MEDIUM' 'Service identities' "[$envName] $($appUsers.Count) of your organisation's own (or consented third-party) application user(s) directly assigned System Administrator: $((@($appUsers | ForEach-Object { "$($_.fullname)" }) | Select-Object -Unique) -join ', '). Service identities should get a scoped role, not full control of the environment." 'dataverse'
+    } elseif ($appUsers.Count) {
+        Add-Finding 'LOW' 'Service identities' "[$envName] $($appUsers.Count) application user(s) directly assigned System Administrator. Most are usually Dynamics' own platform accounts, which this run could not tell apart from your organisation's apps because the service principal list was not read (identity sweep skipped or failed); run without -SkipGraph to list only your own: $((@($appUsers | ForEach-Object { "$($_.fullname)" }) | Select-Object -Unique -First 15) -join ', ')$(if($appUsers.Count -gt 15){" (+$($appUsers.Count - 15) more)"})." 'dataverse'
+    }
+    if ($appNoOwner.Count) {
+        $noOwnerNames = @($appNoOwner | ForEach-Object { "$($_.fullname)" } | Select-Object -Unique)
+        Add-Finding 'LOW' 'Service identities' "[$envName] $($appNoOwner.Count) application user(s) directly assigned System Administrator whose app's owner could not be told (no service principal in this tenant, or one that records no owner): $((@($noOwnerNames) | Select-Object -First 15) -join ', ')$(if($noOwnerNames.Count -gt 15){" (+$($noOwnerNames.Count - 15) more)"}). A Microsoft platform service can look like this, and so can an app registration that was deleted. Look each one up by its application id: expected for a platform service, but remove the role from any you do not recognize." 'dataverse'
     }
 }
 if ($dormantSet.Count -and $dvSysAdmins.Count) {
@@ -267,7 +285,7 @@ if ($dormantSet.Count -and $dvSysAdmins.Count) {
     foreach ($envKey in $dvSysAdmins.Keys) {
         foreach ($upn in @($dvSysAdmins[$envKey])) { if ($upn -and $dormantSet.ContainsKey("$upn".ToLower())) { $dvDormant += "[$envKey] $upn" } }
     }
-    if ($dvDormant.Count) { Add-Finding 'HIGH' 'Dormant admins' "$($dvDormant.Count) Dataverse System Administrator(s) have not signed in for 90+ days: $((@($dvDormant) | Select-Object -First 15) -join '; '). Remove the role unless it is a documented emergency-access account." 'dataverse' }
+    if ($dvDormant.Count) { Add-Finding 'HIGH' 'Dormant admins' "$($dvDormant.Count) Dataverse System Administrator(s) have not signed in for 90+ days: $((@($dvDormant) | Select-Object -First 15) -join '; ')$(if($dvDormant.Count -gt 15){" (+$($dvDormant.Count - 15) more)"}). Remove the role unless it is a documented emergency-access account." 'dataverse' }
 }
 
 # --- Dataverse IP firewall (dvplus-<env>-ipfirewall.json) ---
@@ -457,16 +475,16 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-appservice.json')) {
         }
     }
 }
-if ($fnOpen.Count) { Add-Finding 'MEDIUM' 'App Service' "$($fnOpen.Count) HTTP function(s) need no key (authLevel anonymous) on app(s) that accept traffic from any IP and have no App Service authentication: $((@($fnOpen) | Select-Object -First 12) -join ', '). Anyone who finds the URL can call them; use function keys, App Service authentication or access restrictions unless they are meant to be public." 'azure' }
-if ($fnUnknown.Count) { Add-Finding 'LOW' 'App Service' "$($fnUnknown.Count) HTTP function(s) need no key, and the app's web config could not be read, so whether anyone can reach them is unknown: $((@($fnUnknown) | Select-Object -First 12) -join ', ')." 'azure' }
-if ($fnLimited.Count) { Add-Finding 'LOW' 'App Service' "$($fnLimited.Count) HTTP function(s) need no key but sit behind access restrictions or private access: $((@($fnLimited) | Select-Object -First 12) -join ', ')." 'azure' }
-if ($fnAuth.Count) { Add-Finding 'LOW' 'App Service' "$($fnAuth.Count) HTTP function(s) need no function key but App Service authentication requires a sign-in first: $((@($fnAuth) | Select-Object -First 12) -join ', ')." 'azure' }
-if ($apUnread.Count) { Add-Finding 'LOW' 'App Service' "$($apUnread.Count) app(s) whose web configuration could not be read (TLS, FTP, debugging and access restrictions unknown; see arm-*-appservice.json errors): $((@($apUnread) | Select-Object -First 15) -join ', ')." 'azure' }
+if ($fnOpen.Count) { Add-Finding 'MEDIUM' 'App Service' "$($fnOpen.Count) HTTP function(s) need no key (authLevel anonymous) on app(s) that accept traffic from any IP and have no App Service authentication: $((@($fnOpen) | Select-Object -First 12) -join ', ')$(if($fnOpen.Count -gt 12){" (+$($fnOpen.Count - 12) more)"}). Anyone who finds the URL can call them; use function keys, App Service authentication or access restrictions unless they are meant to be public." 'azure' }
+if ($fnUnknown.Count) { Add-Finding 'LOW' 'App Service' "$($fnUnknown.Count) HTTP function(s) need no key, and the app's web config could not be read, so whether anyone can reach them is unknown: $((@($fnUnknown) | Select-Object -First 12) -join ', ')$(if($fnUnknown.Count -gt 12){" (+$($fnUnknown.Count - 12) more)"})." 'azure' }
+if ($fnLimited.Count) { Add-Finding 'LOW' 'App Service' "$($fnLimited.Count) HTTP function(s) need no key but sit behind access restrictions or private access: $((@($fnLimited) | Select-Object -First 12) -join ', ')$(if($fnLimited.Count -gt 12){" (+$($fnLimited.Count - 12) more)"})." 'azure' }
+if ($fnAuth.Count) { Add-Finding 'LOW' 'App Service' "$($fnAuth.Count) HTTP function(s) need no function key but App Service authentication requires a sign-in first: $((@($fnAuth) | Select-Object -First 12) -join ', ')$(if($fnAuth.Count -gt 12){" (+$($fnAuth.Count - 12) more)"})." 'azure' }
+if ($apUnread.Count) { Add-Finding 'LOW' 'App Service' "$($apUnread.Count) app(s) whose web configuration could not be read (TLS, FTP, debugging and access restrictions unknown; see arm-*-appservice.json errors): $((@($apUnread) | Select-Object -First 15) -join ', ')$(if($apUnread.Count -gt 15){" (+$($apUnread.Count - 15) more)"})." 'azure' }
 if ($apHttp.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apHttp.Count) app(s) do not force HTTPS (HTTPS Only off): $($apHttp -join ', ')." 'azure' }
 if ($apTls.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apTls.Count) app(s) accept TLS below 1.2: $($apTls -join ', ')." 'azure' }
 if ($apFtp.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apFtp.Count) app(s) accept plain FTP for deployments (FTP state All allowed): $($apFtp -join ', '). Set it to FTPS only or Disabled." 'azure' }
 if ($apDebug.Count) { Add-Finding 'MEDIUM' 'App Service' "$($apDebug.Count) app(s) have remote debugging turned on: $($apDebug -join ', ')." 'azure' }
-if ($apOpen.Count) { Add-Finding 'LOW' 'App Service' "$($apOpen.Count) app(s) accept traffic from any IP address (no access restrictions): $((@($apOpen) | Select-Object -First 15) -join ', '). Fine for a public site; for internal APIs and Function Apps, add access restrictions or a private endpoint." 'azure' }
+if ($apOpen.Count) { Add-Finding 'LOW' 'App Service' "$($apOpen.Count) app(s) accept traffic from any IP address (no access restrictions): $((@($apOpen) | Select-Object -First 15) -join ', ')$(if($apOpen.Count -gt 15){" (+$($apOpen.Count - 15) more)"}). Fine for a public site; for internal APIs and Function Apps, add access restrictions or a private endpoint." 'azure' }
 
 # --- Logic Apps with HTTP triggers open to any caller (arm-*-logicapps.json) ---
 $laOpen = @()
@@ -478,7 +496,7 @@ foreach ($f in @(Get-ChildItem $out -Filter 'arm-*-logicapps.json')) {
         Add-AllowList 'Logic App' $la.name @(@($la.allowedCallerIps | Where-Object { $_ }) | ForEach-Object { @{ rule = "$_"; range = "$_" } }) 'azure' 'accepts calls from'
     }
 }
-if ($laOpen.Count) { Add-Finding 'LOW' 'Integration' "$($laOpen.Count) Logic App(s) start from an HTTP request and accept calls from any IP: $((@($laOpen) | Select-Object -First 15) -join ', '). Each call still needs the trigger URL's signature, so anyone holding that URL can start the workflow; restrict caller IPs, or add an Entra ID authorization policy and disable SAS authentication." 'azure' }
+if ($laOpen.Count) { Add-Finding 'LOW' 'Integration' "$($laOpen.Count) Logic App(s) start from an HTTP request and accept calls from any IP: $((@($laOpen) | Select-Object -First 15) -join ', ')$(if($laOpen.Count -gt 15){" (+$($laOpen.Count - 15) more)"}). Each call still needs the trigger URL's signature, so anyone holding that URL can start the workflow; restrict caller IPs, or add an Entra ID authorization policy and disable SAS authentication." 'azure' }
 
 # --- Automation: retired Run As connections (arm-*-automation.json) ---
 $runAs = @()

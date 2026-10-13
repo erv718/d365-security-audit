@@ -486,7 +486,7 @@ function Get-ScopeTag($scope, [string]$plane) {
 $script:DvReads = [ordered]@{
     org           = @{ File = 'org';              Label = 'org settings';            Tables = 'Organization';           Path = 'organizations?$select=name,isauditenabled,isuseraccessauditenabled,auditretentionperiodv2' }
     orginfo       = @{ File = 'orginfo';          Label = 'environment type';        Tables = '';                       Path = "RetrieveCurrentOrganization(AccessType=@p1)?@p1=Microsoft.Dynamics.CRM.EndpointAccessType'Default'"; Probe = "RetrieveCurrentOrganization(AccessType=@p1)?@p1=Microsoft.Dynamics.CRM.EndpointAccessType'Default'" }
-    entities      = @{ File = 'entities';         Label = 'table audit flags';       Tables = '';                       Path = 'EntityDefinitions?$select=LogicalName,IsAuditEnabled,IsCustomEntity'; Probe = "EntityDefinitions(LogicalName='account')?`$select=LogicalName,IsAuditEnabled,IsCustomEntity" }
+    entities      = @{ File = 'entities';         Label = 'table audit flags';       Tables = 'Entity (Customization group)'; Path = 'EntityDefinitions?$select=LogicalName,IsAuditEnabled,IsCustomEntity'; Probe = "EntityDefinitions(LogicalName='account')?`$select=LogicalName,IsAuditEnabled,IsCustomEntity" }
     roles         = @{ File = 'roles';            Label = 'security roles';          Tables = 'Security Role';          Path = 'roles?$select=name,ismanaged,iscustomizable,roleid' }
     solutions     = @{ File = 'solutions';        Label = 'solutions';               Tables = 'Solution, Publisher';    Path = 'solutions?$select=uniquename,friendlyname,version,ismanaged,isvisible&$expand=publisherid($select=friendlyname)' }
     fieldsec      = @{ File = 'fieldsec';         Label = 'field security profiles'; Tables = 'Field Security Profile'; Path = 'fieldsecurityprofiles?$select=name' }
@@ -496,6 +496,8 @@ $script:DvReads = [ordered]@{
     queues        = @{ File = 'queues';           Label = 'queues';                  Tables = 'Queue';                  Path = 'queues?$select=name&$top=5&$count=true' }
     mailboxes     = @{ File = 'mailboxes';        Label = 'mailboxes';               Tables = 'Mailbox';                Path = 'mailboxes?$select=name,statecode&$top=5&$count=true' }
     fieldperms    = @{ File = 'fieldpermissions'; Label = 'field permissions';       Tables = 'Field Security Profile'; Path = 'fieldpermissions?$select=attributelogicalname,fieldsecurityprofileid' }
+    mailsync      = @{ File = 'mailflow';         Label = 'mailboxes syncing';       Tables = 'Mailbox';                Path = 'mailboxes?$select=mailboxid&$filter=statecode eq 0 and emailrouteraccessapproval eq 1 and (incomingemaildeliverymethod eq 2 or outgoingemaildeliverymethod eq 2)&$top=1&$count=true' }
+    queuemail     = @{ File = 'mailflow';         Label = 'queues receiving email';  Tables = 'Queue';                  Path = 'queues?$select=queueid&$filter=statecode eq 0 and emailaddress ne null and incomingemaildeliverymethod eq 2&$top=1&$count=true' }
     ipfirewall    = @{ File = 'ipfirewall';       Label = 'IP firewall settings';    Tables = 'Organization';           Path = 'organizations?$select=name,enableipbasedfirewallrule,enableipbasedfirewallruleinauditmode,allowediprangeforfirewall,allowedservicetagsforfirewall,allowapplicationuseraccess,allowmicrosofttrustedservicetags' }
 }
 function Get-DvProbePath($read) {
@@ -505,19 +507,23 @@ function Get-DvProbePath($read) {
     return "$($read.Path)$sep`$top=1"
 }
 
-# Dataverse names a missing privilege in its 403 body ("... is missing prvReadPublisher privilege
-# (Id=...) on OTC=7101 for entity 'publisher'"). Returns the table as the role editor shows it,
-# or $null when the error is not a missing privilege.
+# Dataverse names a missing privilege in its 403 body, in one of two wordings: "... is missing
+# prvReadPublisher privilege (Id=...) on OTC=7101 for entity 'publisher'", or "SecLib::CheckPrivilege
+# failed. ... PrivilegeName: prvReadEntity, PrivilegeId: ..., Required Depth: Basic". Returns the
+# table as the role editor shows it, or $null when the error is not a missing privilege. Entity and
+# Field sit in the editor's Customization group, not with the other tables (Microsoft's privilege
+# table: https://learn.microsoft.com/en-us/troubleshoot/power-platform/dataverse/d365-app-outlook/privilege-error-occurs-when-using-dynamics-365-app-for-outlook).
 $script:DvPrivTables = @{
     prvReadOrganization = 'Organization'; prvReadSolution = 'Solution'; prvReadPublisher = 'Publisher'
     prvReadRole = 'Security Role'; prvReadUser = 'User'; prvReadFieldSecurityProfile = 'Field Security Profile'
     prvReadFieldPermission = 'Field Permission'; prvReadEmailServerProfile = 'Email Server Profile'
-    prvReadMailbox = 'Mailbox'; prvReadQueue = 'Queue'; prvReadEntity = 'Entity'; prvReadAttribute = 'Attribute'
+    prvReadMailbox = 'Mailbox'; prvReadQueue = 'Queue'; prvReadEntity = 'Entity (Customization group)'; prvReadAttribute = 'Field (Customization group)'
     prvReadTeam = 'Team'; prvReadBusinessUnit = 'Business Unit'
 }
 function Get-DvMissingTable([string]$ErrorText) {
-    if ($ErrorText -notmatch 'missing (prv\w+) privilege') { return $null }
-    $priv = $Matches[1]
+    if ($ErrorText -match 'missing (prv\w+) privilege') { $priv = $Matches[1] }
+    elseif ($ErrorText -match 'PrivilegeName:\s*(prv\w+)') { $priv = $Matches[1] }
+    else { return $null }
     if ($script:DvPrivTables.ContainsKey($priv)) { return $script:DvPrivTables[$priv] }
     if ($ErrorText -match "for entity '([^']+)'") { return "$($Matches[1]) ($priv)" }
     return $priv
@@ -619,3 +625,14 @@ $script:CoveredArmTypes = @('microsoft.sql/servers', 'microsoft.sql/servers/data
     'microsoft.network/virtualnetworks', 'microsoft.compute/virtualmachines', 'microsoft.storage/storageaccounts',
     'microsoft.web/sites', 'microsoft.web/connections', 'microsoft.logic/workflows', 'microsoft.automation/automationaccounts',
     'microsoft.automation/automationaccounts/runbooks', 'microsoft.operationalinsights/workspaces')
+
+# Dataverse stops counting at 5,000 rows ($count=true on a standard table) and says so in the
+# totalrecordcountlimitexceeded annotation; such a count is shown as '5000+'. A file from an older
+# run has no flag, so a count sitting exactly at the ceiling reads as capped too.
+function Format-DvCount($Count, $Capped) {
+    if ($null -eq $Count) { return '?' }
+    $n = 0
+    try { $n = [int]$Count } catch { return "$Count" }
+    if ($Capped -eq $true -or ($null -eq $Capped -and $n -ge 5000)) { return "$n+" }
+    return "$n"
+}

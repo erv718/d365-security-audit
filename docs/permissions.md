@@ -100,14 +100,22 @@ security role.
 | Table (as the role editor names it) | Why the audit reads it |
 |---|---|
 | Organization | audit settings and audit-log retention (3.4, 4.1, 4.2) |
+| Entity | the table-level audit flags (4.1), read from the table definitions. The privilege is `prvReadEntity`; without it the setup check fails on "table audit flags" |
 | Security Role | custom vs built-in roles, and the role each user holds (1.2, 5.1) |
 | User | who holds System Administrator, people and application users (1.2, 5.1) |
 | Solution | unmanaged solutions in Production |
 | Publisher | the solution read includes each solution's publisher, and Dataverse rejects the whole solution read without it |
 | Field Security Profile | column-level security in use (5.2) |
 | Email Server Profile | server-side sync profiles (3.5) |
-| Mailbox | mailbox records (3.6) |
-| Queue | queues (3.6) |
+| Mailbox | mailbox records, and how many sync through server-side sync (3.6) |
+| Queue | queues, and how many receive email (3.6) |
+
+Entity is not listed with the other tables: it sits in the role editor's **Customization** group.
+With **Compact Grid View** off, the **Name** column of that row reads `entity`. (Microsoft's
+privilege table lists `prvReadEntity` as Entity in the Customization tab:
+<https://learn.microsoft.com/en-us/troubleshoot/power-platform/dataverse/d365-app-outlook/privilege-error-occurs-when-using-dynamics-365-app-for-outlook>;
+the editor's tabs, groups and Name column:
+<https://learn.microsoft.com/en-us/power-platform/admin/security-roles-privileges>.)
 
 Team and Business Unit are not needed (harmless if already ticked).
 

@@ -45,7 +45,7 @@ function New-RedactionMap([string]$OutDir) {
         $map[$k] = "<$kind-$($counts[$kind])>"
     }
     $files = @(Get-ChildItem $OutDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
-    $dvAreas  = @('org', 'orginfo', 'entities', 'roles', 'solutions', 'fieldsec', 'users', 'org-settings', 'emailprofiles', 'queues', 'mailboxes', 'fieldpermissions', 'ipfirewall')
+    $dvAreas  = @('org', 'orginfo', 'entities', 'roles', 'solutions', 'fieldsec', 'users', 'org-settings', 'emailprofiles', 'queues', 'mailboxes', 'mailflow', 'fieldpermissions', 'ipfirewall')
     $armAreas = @('rbac', 'sql', 'synapse', 'keyvaults', 'nsgs', 'defender-pricings', 'loganalytics', 'sentinel', 'diagnostic-settings', 'logicapps', 'resources', 'storage', 'vms', 'nics', 'publicips', 'vnets', 'appservice', 'automation', 'apiconnections')
     $dvRx  = "^(dv|dvplus)-(.+)-($(($dvAreas  | ForEach-Object { [regex]::Escape($_) }) -join '|'))(-ERROR)?\.json$"
     $armRx = "^arm-(.+)-($(($armAreas | ForEach-Object { [regex]::Escape($_) }) -join '|'))(-ERROR)?\.json$"
