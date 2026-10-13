@@ -65,7 +65,7 @@ This tool reads the configuration directly, so the findings are based on the liv
 
 **The assessment report**
 
-`output/assessment-report.md` maps the evidence to Microsoft's Power Platform and Dynamics 365 Security Review: 8 domains, 29 checks (28 unique; 2.5 is a template duplicate of 2.4). Every verdict is tied to an evidence file in `output/`. If that file is missing, the check reads **Not checked** and names the access that would unlock it; the tool never guesses. Checks no API can answer (incident response plan, Customer Lockbox, sensitivity labels, residency adequacy) are marked **MANUAL** with the exact portal path to confirm them.
+`output/assessment-report.md` maps the evidence to Microsoft's Power Platform and Dynamics 365 Security Review: 8 domains, 29 checks (28 unique; 2.5 is a template duplicate of 2.4). Every verdict is tied to an evidence file in `output/`. The same report is written as `assessment-report.html`: open it in a browser, print it to PDF for a meeting. If that file is missing, the check reads **Not checked** and names the access that would unlock it; the tool never guesses. Checks no API can answer (incident response plan, Customer Lockbox, sensitivity labels, residency adequacy) are marked **MANUAL** with the exact portal path to confirm them.
 
 **Beyond the checklist**, the report and the findings add: Managed Environments coverage, default-environment DLP coverage, legacy/basic-auth detection in the sign-in sample, guest concentration by home domain, Defender for Cloud plan status, PIM standing versus eligible admin access, dormant accounts and dormant admins, System Administrator holders, service identities with full control, Owner sprawl, and firewall-breadth grading. When a pull fails, the matching **Not checked** row quotes the service's own error so the fix is obvious.
 
@@ -98,6 +98,7 @@ Output lands in `./output` (git-ignored):
 - `*.json` - the raw evidence for each area
 - `FINDINGS-summary.json` - the ranked summary, also printed to the console
 - `assessment-report.md` - the pulls mapped to Microsoft's 8-domain / 29-check review, every verdict tied to its evidence file
+- `assessment-report.html` - the same report as a page: open it in a browser, print it to PDF for a meeting
 
 Run a single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
 `-Log` keeps everything printed in `output/run-log.txt`.

@@ -48,7 +48,8 @@ Copy-Item .env.example .env    # then fill it in (see Authentication below)
 ```
 
 Output lands in `./output` (git-ignored): `*.json` raw evidence, `FINDINGS-summary.json`
-(also printed to the console), `assessment-report.md` and `assessment-report.json`. Run a
+(also printed to the console), `assessment-report.md`, the same as a page in
+`assessment-report.html`, and `assessment-report.json`. Run a
 single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
 `-Log` keeps everything printed in `output/run-log.txt` (the setup check, every warning, one
 Timing line with the seconds each step took); `-Inventory <export.csv>` cross-checks a portal
@@ -131,7 +132,8 @@ instructions. Point the user at that checklist first when something fails.
 
 ## Reading the output
 
-- `assessment-report.md` (and `.json`): the pulls mapped to Microsoft's Power Platform and
+- `assessment-report.md` (and `.json`; `.html` is the same report as a page for a browser or a
+  PDF print): the pulls mapped to Microsoft's Power Platform and
   Dynamics 365 Security Review, 8 domains and 29 checks. 28 are unique: 2.5 is a duplicate of
   2.4 in Microsoft's template, so it mirrors 2.4 and is left out of the tally.
   - Every verdict is tied to an evidence file in `output/`. If that file is missing, the check
