@@ -53,12 +53,25 @@ foreach ($s in $subs) {
         Write-Host "    resource groups in scope here: $(@($groups).Count) of $($names.Count)$(if(@($groups).Count -eq 0){' (resource readers read nothing; role assignments still read)'})" -ForegroundColor Yellow
     }
 
+    $ra = $null   # never the previous subscription's list when this read fails
     try {
         $ra = Get-Arm "$base/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"
         $highCount = @($ra | Where-Object { $wellKnown[$_.properties.roleDefinitionId.Split('/')[-1]] -in 'Owner','User Access Administrator' -and $_.properties.scope -eq "/subscriptions/$sid" }).Count
         Save-Json $ra "arm-$safe-rbac.json" | Out-Null
         Write-Host "    RBAC: $($ra.Count) assignments; $highCount Owner/UAA at subscription scope" -ForegroundColor Yellow
     } catch { Write-Warning "    RBAC failed: $(Get-ErrorText $_)"; Save-Json @{ error = (Get-ErrorText $_) } "arm-$safe-rbac-ERROR.json" | Out-Null }
+    # The definition of every role assigned here, apart from the few whose rights are known
+    # (Owner, Contributor, Network Contributor, User Access Administrator, Role Based Access Control
+    # Administrator, Reader): analyze.ps1 checks which of them can change NSG rules. Reading each
+    # assigned role covers custom roles defined at any scope and every other built-in role.
+    if ($ra) {
+        try {
+            $knownRoles = @('8e3af657-a8ff-443c-a75c-2fe8c4bcb635', 'b24988ac-6180-42a0-ab88-20f7382dd24c', '4d97b98b-1d4f-4787-a291-c67834d212e7', '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9', 'f58310d9-a9f6-439a-9e8d-f62e7b41a168', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')
+            $defIds = @($ra | ForEach-Object { "$($_.properties.roleDefinitionId)" } | Where-Object { $_ -and $knownRoles -notcontains $_.Split('/')[-1].ToLower() } | Sort-Object -Unique)
+            $defs = @(foreach ($di in $defIds) { try { Invoke-RestMethod -Uri "https://management.azure.com$($di)?api-version=2022-04-01" -Headers $H } catch { [pscustomobject]@{ id = $di; error = (Get-ErrorText $_) } } })
+            Save-Json $defs "arm-$safe-roledefs.json" | Out-Null
+        } catch { Write-Warning "    role definitions failed: $(Get-ErrorText $_)"; Save-Json @{ error = (Get-ErrorText $_) } "arm-$safe-roledefs-ERROR.json" | Out-Null }
+    }
 
     if (Test-ScopedReader $scope 'sql') {
         try {

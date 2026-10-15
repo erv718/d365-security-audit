@@ -28,6 +28,7 @@ This tool reads the configuration directly, so the findings are based on the liv
 **Identity (Microsoft Graph)**
 - App registrations and expired / expiring client secrets and certificates
 - Service principals and which apps hold high-privilege tenant-wide permissions in Microsoft Graph and Exchange Online (all-mail, every mailbox, directory write, etc.)
+- Who can add a secret to those apps and act as them: the apps' owners, and the holders of Application Administrator and Cloud Application Administrator
 - Directory roles and how many hold Global Administrator; PIM eligible (just-in-time) versus standing admin access (no Entra ID P2 licence reads as a Gap: all admin access is standing)
 - Dormant accounts: enabled accounts with no sign-in for 90+ days, and dormant accounts that still hold an admin role (needs Entra ID P1)
 - Conditional Access policies (how many exist, how many are enabled, whether any enforce MFA or a compliant device), security defaults, the authentication methods policy, named locations
@@ -51,21 +52,27 @@ This tool reads the configuration directly, so the findings are based on the liv
 
 **Cloud infrastructure (Azure ARM, per subscription)**
 - Role assignments: Owner sprawl (more than 3 owners at subscription scope) and service principals holding Owner or User Access Administrator
+- Who can change network rules (open a port, add an IP address), per subscription: Owner, Contributor, Network Contributor or a custom role with network write, and who can grant themselves that
 - SQL servers: public network access, minimum TLS version, and "allow all Azure IPs" firewall rules
 - Synapse workspaces: public network access and "allow all Azure IPs"
 - Virtual machines: which ones have a public IP, and which of those have no NSG on the network interface or the subnet
 - Network security groups: every inbound rule open to the internet, graded by port (remote-admin and database ports, or all ports, are HIGH), and source ranges open to every Azure customer
+- Specific public IP addresses allowed on remote-admin or database ports (RDP, SSH, WinRM, SQL and others), compared with your Conditional Access named locations (your documented office and VPN ranges): typically somebody's home connection added to reach a VM directly, for example on a Lifecycle Services cloud-hosted VM
 - Storage accounts: open to all networks, anonymous blob access, HTTPS and TLS, shared-key authorization
 - App Service and Function Apps: HTTPS Only, TLS, plain FTP, remote debugging, access restrictions, and HTTP functions that need no key
 - Logic Apps whose HTTP trigger accepts calls from any IP; Automation accounts still holding a retired Run As connection; API connections that sign in as a named (or dormant) account
-- Every allowlist in one place, graded by breadth (whole internet, wider than a /16): SQL and Synapse firewalls, storage IP rules, NSG sources, App Service access restrictions, Logic App caller ranges and the Dataverse IP firewall
-- Key Vaults: RBAC vs legacy access policies, and public network access
+- Every allowlist in one place, graded by breadth (whole internet, wider than a /16): SQL and Synapse firewalls, storage IP rules, NSG sources, App Service access restrictions, Logic App caller ranges and the Dataverse IP firewall, plus every public address in them that is in none of your named locations
+- Key Vaults: RBAC vs legacy access policies, public network access, soft delete and purge protection
 - Defender for Cloud plans (Standard vs Free), Log Analytics workspaces and Sentinel onboarding, activity-log diagnostic settings
 - The full resource inventory, with which types a security rule checks; `scripts/inventory-check.ps1 -FromInventory <export.csv>` (or `run-audit.ps1 -Inventory <export.csv>`) cross-checks it against your own portal export
 
+**The report for people**
+
+`output/security-assessment.html` is the report to hand around. It opens in any browser and prints cleanly to PDF. It starts with a summary and the issues to fix first; then every issue is a card that says what was found, why it matters, the steps to fix it, and links to Microsoft's documentation for those steps. Microsoft's 29-check review and the checks a person has to do by hand follow. The explanations come from a fixed catalog (`scripts/finding-catalog.json`) checked against Microsoft Learn, so the report reads the same every run for the same evidence: no AI writes it. To see the format before you run anything, open [docs/sample-security-assessment.html](docs/sample-security-assessment.html) (made-up test data, no real organization).
+
 **The assessment report**
 
-`output/assessment-report.md` maps the evidence to Microsoft's Power Platform and Dynamics 365 Security Review: 8 domains, 29 checks (28 unique; 2.5 is a template duplicate of 2.4). Every verdict is tied to an evidence file in `output/`. The same report is written as `assessment-report.html`: open it in a browser, print it to PDF for a meeting. If that file is missing, the check reads **Not checked** and names the access that would unlock it; the tool never guesses. Checks no API can answer (incident response plan, Customer Lockbox, sensitivity labels, residency adequacy) are marked **MANUAL** with the exact portal path to confirm them.
+`output/assessment-report.md` maps the evidence to Microsoft's Power Platform and Dynamics 365 Security Review: 8 domains, 29 checks (28 unique; 2.5 is a template duplicate of 2.4). Every verdict is tied to an evidence file in `output/`. If that file is missing, the check reads **Not checked** and names the access that would unlock it; the tool never guesses. Checks no API can answer (incident response plan, Customer Lockbox, sensitivity labels, residency adequacy) are marked **MANUAL** with the exact portal path to confirm them.
 
 **Beyond the checklist**, the report and the findings add: Managed Environments coverage, default-environment DLP coverage, legacy/basic-auth detection in the sign-in sample, guest concentration by home domain, Defender for Cloud plan status, PIM standing versus eligible admin access, dormant accounts and dormant admins, System Administrator holders, service identities with full control, Owner sprawl, and firewall-breadth grading. When a pull fails, the matching **Not checked** row quotes the service's own error so the fix is obvious.
 
@@ -98,7 +105,7 @@ Output lands in `./output` (git-ignored):
 - `*.json` - the raw evidence for each area
 - `FINDINGS-summary.json` - the ranked summary, also printed to the console
 - `assessment-report.md` - the pulls mapped to Microsoft's 8-domain / 29-check review, every verdict tied to its evidence file
-- `assessment-report.html` - the same report as a page: open it in a browser, print it to PDF for a meeting
+- `security-assessment.html` - the report for people: each issue, why it matters, the steps to fix it and Microsoft's documentation; open it in a browser, print it to PDF
 
 Run a single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
 `-Log` keeps everything printed in `output/run-log.txt`.

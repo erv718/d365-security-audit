@@ -21,23 +21,69 @@ try {
 } catch { Write-Warning "applications need Application.Read.All: $(Get-ErrorText $_)"; Save-Json @{ error = (Get-ErrorText $_) } 'applications-ERROR.json' | Out-Null }
 
 Write-Host 'Graph: service principals...' -ForegroundColor Cyan
-$sps = @()
+$sps = @(); $spsOk = $false
 try {
     $sps = Invoke-Paged "$G/servicePrincipals?`$top=999&`$select=id,appId,displayName,servicePrincipalType,accountEnabled,appOwnerOrganizationId,tags" $H
     Save-Json $sps 'servicePrincipals.json' | Out-Null
+    $spsOk = $true
 } catch { Write-Warning "service principals need Application.Read.All: $(Get-ErrorText $_)"; Save-Json @{ error = (Get-ErrorText $_) } 'servicePrincipals-ERROR.json' | Out-Null }
 
 Write-Host 'Graph: app-role assignments (Graph + Exchange)...' -ForegroundColor Cyan
-try {
-    foreach ($pair in @(@('graph','00000003-0000-0000-c000-000000000000'), @('exo','00000002-0000-0ff1-ce00-000000000000'))) {
-        $sp = $sps | Where-Object { $_.appId -eq $pair[1] } | Select-Object -First 1
-        if (-not $sp) { continue }
+$riskyHolders = @{}   # service principal id -> the high-privilege roles it holds ($RiskyAppRoles, _common.ps1)
+$appRolesOk = $spsOk
+# One try per resource, and a per-resource error file, so a failure replaces that resource's file
+# from an earlier run instead of leaving it to be read as this run's.
+foreach ($pair in @(@('graph','00000003-0000-0000-c000-000000000000'), @('exo','00000002-0000-0ff1-ce00-000000000000'))) {
+    if (-not $spsOk) { Save-Json @{ error = 'not read: the service principal list could not be read' } "appRoleAssignments-$($pair[0])-ERROR.json" | Out-Null; continue }
+    $sp = $sps | Where-Object { $_.appId -eq $pair[1] } | Select-Object -First 1
+    if (-not $sp) { continue }
+    try {
         $full = Invoke-RestMethod -Uri "$G/servicePrincipals/$($sp.id)?`$select=appRoles" -Headers $H
         Save-Json $full.appRoles "appRoleDefinitions-$($pair[0]).json" | Out-Null
         $asn = Invoke-Paged "$G/servicePrincipals/$($sp.id)/appRoleAssignedTo?`$top=999" $H
         Save-Json $asn "appRoleAssignments-$($pair[0]).json" | Out-Null
-    }
-} catch { Write-Warning "app-role assignments failed: $(Get-ErrorText $_)"; Save-Json @{ error = (Get-ErrorText $_) } 'appRoleAssignments-ERROR.json' | Out-Null }
+        $defMap = @{}; foreach ($d in @($full.appRoles)) { if ($d -and $d.id) { $defMap["$($d.id)"] = "$($d.value)" } }
+        foreach ($m in @($asn)) {
+            $rn = $defMap["$($m.appRoleId)"]
+            if ($rn -and $script:RiskyAppRoles -contains $rn) { $k = "$($m.principalId)"; if (-not $riskyHolders.ContainsKey($k)) { $riskyHolders[$k] = @() }; $riskyHolders[$k] += $rn }
+        }
+    } catch { $appRolesOk = $false; Write-Warning "app-role assignments ($($pair[0])) failed: $(Get-ErrorText $_)"; Save-Json @{ error = (Get-ErrorText $_) } "appRoleAssignments-$($pair[0])-ERROR.json" | Out-Null }
+}
+
+# Owners of the apps that hold a high-privilege permission: an owner can add a new secret to the
+# app and sign in as it, with no admin role. Read for those apps only (Application.Read.All; the
+# owners' names need User.Read.All): both the enterprise app's (service principal's) owners and,
+# when the app is registered in this tenant, the app registration's. Written every run, so an
+# earlier run's list is never read as this one's.
+if (-not $appRolesOk) {
+    Save-Json @{ error = 'not read: the service principal list or the app-role assignments could not be read this run' } 'app-owners-ERROR.json' | Out-Null
+} elseif (-not $riskyHolders.Count) {
+    Save-Json @() 'app-owners.json' | Out-Null
+} else {
+    Write-Host "Graph: owners of the $($riskyHolders.Count) app(s) that hold a high-privilege permission..." -ForegroundColor Cyan
+    try {
+        $spById = @{}; foreach ($s in @($sps)) { if ($s -and $s.id) { $spById["$($s.id)"] = $s } }
+        $sel = '?$select=id,displayName,userPrincipalName'
+        $ownersOut = @(foreach ($spId in @($riskyHolders.Keys)) {
+            $s = $spById[$spId]
+            if (-not $s) { continue }
+            $own = @{}; $errs = @(); $from = @()
+            try {
+                $ol = Invoke-Paged "$G/servicePrincipals/$spId/owners$sel" $H
+                foreach ($o in @($ol | Where-Object { $_ })) { $own["$($o.id)"] = [pscustomobject]@{ id = "$($o.id)"; displayName = "$($o.displayName)"; userPrincipalName = "$($o.userPrincipalName)"; type = "$($o.'@odata.type')" } }
+                $from += 'enterprise app'
+            } catch { $errs += Get-ErrorText $_ }
+            try {
+                $ol2 = Invoke-Paged "$G/applications(appId='$($s.appId)')/owners$sel" $H
+                foreach ($o in @($ol2 | Where-Object { $_ })) { $own["$($o.id)"] = [pscustomobject]@{ id = "$($o.id)"; displayName = "$($o.displayName)"; userPrincipalName = "$($o.userPrincipalName)"; type = "$($o.'@odata.type')" } }
+                $from += 'app registration'
+            } catch { $t = Get-ErrorText $_; if ($t -notmatch '404|Request_ResourceNotFound|does not exist') { $errs += $t } }   # 404: registered in another tenant
+            [pscustomobject]@{ appId = "$($s.appId)"; spId = "$spId"; displayName = "$($s.displayName)"; object = ($from -join ' + '); roles = @($riskyHolders[$spId] | Select-Object -Unique); owners = @($own.Values); error = $(if ($errs.Count) { $errs -join ' | ' } else { $null }) }
+        })
+        Save-Json $ownersOut 'app-owners.json' | Out-Null
+        Write-Host "  $(@($ownersOut | Where-Object { @($_.owners).Count }).Count) of them have owners." -ForegroundColor Yellow
+    } catch { Write-Warning "app owners failed: $(Get-ErrorText $_)"; Save-Json @{ error = (Get-ErrorText $_) } 'app-owners-ERROR.json' | Out-Null }
+}
 
 Write-Host 'Graph: directory roles + members...' -ForegroundColor Cyan
 try {

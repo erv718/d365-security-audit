@@ -1,0 +1,2331 @@
+{
+ "version": 1,
+ "note": "Fixed explanations, fix steps and Microsoft documentation links that security-report.ps1 prints for each finding Key. Plain English, ASCII only. Every link was opened and checked against the steps when written.",
+ "groups": [
+  {
+   "id": "identity",
+   "title": "Accounts, sign-in and app access",
+   "intro": "These checks look at how people and apps sign in through Entra ID, the sign-in service Dynamics 365 uses. They cover MFA (a second sign-in check), old sign-in methods, admin roles, unused and guest accounts, and what connected apps are allowed to do."
+  },
+  {
+   "id": "network",
+   "title": "Azure network exposure",
+   "intro": "These checks look at which Azure virtual machines, databases and other services can be reached from the internet, and from which addresses. Every open port and every allowed address should have a known owner and a current reason."
+  },
+  {
+   "id": "access",
+   "title": "Who can change Azure, and how storage and key vaults are protected",
+   "intro": "These findings show who can make big changes in your Azure subscriptions, and how well your storage accounts (where Azure keeps files and data) and key vaults (locked safes for passwords and keys) are protected. Fewer people with broad rights, and tighter settings, mean one stolen account or leaked key does less harm."
+  },
+  {
+   "id": "dynamics",
+   "title": "Dynamics 365 and Dataverse",
+   "intro": "These checks cover Dynamics 365 and Dataverse (the database behind Dynamics 365 and Power Apps): change history, who has full admin rights, how changes reach Production, and which networks can connect. Each finding names the environment it came from."
+  },
+  {
+   "id": "integration",
+   "title": "Azure apps and integrations",
+   "intro": "These checks look at Function Apps, web apps, Logic Apps, Automation accounts and API connections (saved sign-ins used by workflows). They find settings that let strangers in, weaken encryption, or tie a workflow to one person's account."
+  }
+ ],
+ "findings": {
+  "ca-mfa-coverage": {
+   "group": "identity",
+   "title": "Gaps in MFA coverage for sign-ins",
+   "why": "MFA (a second sign-in check) stops most attacks that use a stolen or guessed password. If MFA is not required for every user on every app, one leaked password can open Dynamics 365, email and files. A rule that covers only a small pilot group or one app, or that leaves many people out, leaves the rest open.",
+   "steps": [
+    "Check first: list every enabled Conditional Access policy (a sign-in rule in Entra ID) and who or what each one leaves out. Keep two break-glass accounts (spare emergency admin accounts) out of MFA rules, so one mistake cannot lock out every admin.",
+    "Conditional Access needs an Entra ID P1 license. Without P1, turn on security defaults (free built-in sign-in protections) at Entra ID > Overview > Properties > Manage security defaults. They make everyone register for MFA, always ask admins for it, and ask other users when needed.",
+    "With P1, go to Entra ID > Conditional Access > Policies > New policy. Include All users. Exclude only the break-glass accounts, plus the Directory Synchronization Accounts role if you sync accounts from on-premises Active Directory. Under Target resources, include All resources. Under Grant, select Require authentication strength, then Multifactor authentication strength. If you use an outside MFA provider, select Require multifactor authentication instead.",
+    "Set Enable policy to Report-only (logs results, blocks nothing) first, and tell users so they can register an MFA method. When the results look right, switch it to On.",
+    "Open each policy that already asks for MFA. If it offers MFA as one choice among others (Require one of the selected controls), people can pass it without MFA, for example from a compliant device (one that meets company rules).",
+    "If a policy already covers all users and all resources, review who it leaves out. Keep only break-glass and sync accounts excluded, unless another policy covers those people with MFA."
+   ],
+   "links": [
+    {
+     "title": "Require multifactor authentication for all users",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/policy-all-users-mfa-strength"
+    },
+    {
+     "title": "Security defaults in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/fundamentals/security-defaults"
+    },
+    {
+     "title": "Conditional Access: Grant",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-conditional-access-grant"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "legacy-auth-seen": {
+   "group": "identity",
+   "title": "Legacy sign-in methods still in use",
+   "why": "Legacy authentication means old sign-in methods, such as basic sign-in for IMAP, POP or ActiveSync mail. They cannot use MFA (a second sign-in check), so MFA does not protect these sign-ins. Almost all password-spray attacks (guessing common passwords across many accounts) use these methods.",
+   "steps": [
+    "Check first: in Entra ID > Monitoring & health > Sign-in logs, select Add filters > Client App and pick the legacy protocols. Repeat on the User sign-ins (non-interactive) tab. For each sign-in, note the account, the app or device, and whether it succeeded. ActiveSync phones that sign in with a certificate also count as legacy, so a block will stop them too.",
+    "With Entra ID P1 and sign-in logs sent to a Log Analytics workspace (a store for log data), the Sign-ins using legacy authentication workbook shows up to 90 days by protocol, app and user.",
+    "Failed attempts from places you do not know are often password guessing. A successful sign-in means an app or device still uses an old method: move it to modern authentication (sign-in that supports MFA), or ask its vendor to.",
+    "Exchange Online has already turned off basic sign-in for ActiveSync, POP, IMAP and most other mail connections. Basic sign-in for SMTP AUTH (how some devices send mail) still works where it is in use, but it is being retired, so plan for scanners and apps that send mail.",
+    "Block it with a Conditional Access policy (a sign-in rule), which needs Entra ID P1. Include All users and All resources. Under Conditions > Client apps, check only Exchange ActiveSync clients and Other clients. Under Grant, select Block access. Exclude at least one break-glass account (spare emergency admin account). Start in Report-only, then switch to On.",
+    "Without P1, security defaults (free built-in sign-in protections) also block legacy authentication, for everyone at once. Use the log check above first so no admin or key app is cut off."
+   ],
+   "links": [
+    {
+     "title": "Block legacy authentication with Conditional Access",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/policy-block-legacy-authentication"
+    },
+    {
+     "title": "Deprecation of Basic authentication in Exchange Online",
+     "url": "https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/deprecation-of-basic-authentication-exchange-online"
+    },
+    {
+     "title": "Sign-ins using legacy authentication workbook",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/workbook-legacy-authentication"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "legacy-auth-none": {
+   "group": "identity",
+   "title": "No legacy sign-ins found in the sample",
+   "why": "Legacy authentication (old sign-in methods) cannot use MFA (a second sign-in check). Most password-guessing attacks use it, so seeing none is good. This sample holds only recent interactive sign-ins (sign-ins a person makes), so apps that sign in in the background, or only now and then, may not show up.",
+   "steps": [
+    "No urgent action needed.",
+    "Confirm over a longer time: in Entra ID > Monitoring & health > Sign-in logs, select Add filters > Client App and pick the legacy protocols. Check the User sign-ins (non-interactive) tab too, which this sample does not cover.",
+    "With Entra ID P1 and sign-in logs sent to a Log Analytics workspace (a store for log data), open Entra ID > Monitoring & health > Workbooks and pick Sign-ins using legacy authentication to see up to 90 days.",
+    "Keep legacy authentication blocked so it stays at zero. Use a Conditional Access policy (a sign-in rule), which needs Entra ID P1, or turn on security defaults (free built-in sign-in protections) if you do not have P1."
+   ],
+   "links": [
+    {
+     "title": "Sign-ins using legacy authentication workbook",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/workbook-legacy-authentication"
+    },
+    {
+     "title": "Block legacy authentication with Conditional Access",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/policy-block-legacy-authentication"
+    }
+   ],
+   "owner": "Identity team",
+   "info": true
+  },
+  "global-admins": {
+   "group": "identity",
+   "title": "Global Administrator role holders to review",
+   "why": "Global Administrator can change almost every admin setting in Entra ID and the connected cloud services, and can raise its own access to read data. Each extra holder is one more account an attacker can target. Best practice is fewer than five holders, all protected with MFA (a second sign-in check).",
+   "steps": [
+    "Check first: find your break-glass accounts (spare emergency admin accounts). Keep two of them as permanent, cloud-only Global Administrators.",
+    "For each other holder, ask what tasks they do. Give them a smaller role that covers just those tasks, then remove Global Administrator. Entra ID > Roles & admins > All roles lists every role.",
+    "Make sure every admin must use MFA, through a Conditional Access policy (a sign-in rule) or PIM (time-limited admin access) role settings.",
+    "With Entra ID P2 or Entra ID Governance, use PIM to make admins eligible: they turn the role on only when needed, and it switches off on its own.",
+    "Give admin roles only to cloud-only accounts (created in Entra ID, not synced), not to accounts synced from on-premises Active Directory."
+   ],
+   "links": [
+    {
+     "title": "Best practices for Microsoft Entra roles",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/best-practices"
+    },
+    {
+     "title": "Manage emergency access accounts in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/security-emergency-access"
+    },
+    {
+     "title": "What is Microsoft Entra Privileged Identity Management?",
+     "url": "https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-configure"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "dormant-accounts": {
+   "group": "identity",
+   "title": "Enabled accounts unused for 90 days or more",
+   "why": "An account that nobody uses still works. If its password leaks or is guessed, an attacker can sign in, and no one is around to notice. Guest accounts (accounts for outside people) usually sign in through their own organization, so a forgotten guest keeps working for as long as that home account does.",
+   "steps": [
+    "Check first: some accounts never sign in on purpose. Shared mailbox accounts (mailboxes several people use) should be blocked from sign-in, not deleted. Keep break-glass accounts (spare emergency admin accounts), and confirm service accounts (accounts used by programs) with their owners.",
+    "Send the list to managers or team owners. Ask: does this person still work here, and do they still need this account? Allow for long leave. For guests, ask the team that invited them.",
+    "Block sign-in on accounts nobody claims: Entra ID > Users > All users > select the user > Account status > Edit, clear Account enabled, then Save. For accounts synced from on-premises Active Directory, disable them in Active Directory first.",
+    "Delete an account only after a second review and an agreed waiting period with sign-in blocked.",
+    "To repeat this on a schedule, access reviews (scheduled checks of who has access) of inactive users need Entra ID Governance."
+   ],
+   "links": [
+    {
+     "title": "How to detect and investigate inactive user accounts",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-manage-inactive-user-accounts"
+    },
+    {
+     "title": "Revoke user access in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/users/users-revoke-access"
+    },
+    {
+     "title": "About shared mailboxes in Microsoft 365",
+     "url": "https://learn.microsoft.com/en-us/microsoft-365/admin/email/about-shared-mailboxes"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "dormant-none": {
+   "group": "identity",
+   "title": "No enabled accounts idle for 90 days",
+   "why": "Unused accounts are easy to misuse because no one notices when they sign in. None were found, so account cleanup is keeping up.",
+   "steps": [
+    "No action needed.",
+    "Keep it that way: block sign-in on each person's last day, and re-run this check every quarter.",
+    "To automate it, access reviews (scheduled checks of who has access) of inactive users need Entra ID Governance."
+   ],
+   "links": [
+    {
+     "title": "How to detect and investigate inactive user accounts",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-manage-inactive-user-accounts"
+    },
+    {
+     "title": "What are access reviews?",
+     "url": "https://learn.microsoft.com/en-us/entra/id-governance/access-reviews-overview"
+    }
+   ],
+   "owner": "Identity team",
+   "info": true
+  },
+  "dormant-admins-directory": {
+   "group": "identity",
+   "title": "Admin roles held by idle accounts",
+   "why": "These accounts hold directory roles (admin roles in Entra ID) but have not signed in for 90 days or more. If one of their passwords leaks, an attacker gets admin power, and nobody is using the account to notice.",
+   "steps": [
+    "Check first: find out if each account is a break-glass account (spare emergency admin account). If it is, keep it. These should be tested at least every 90 days, so this finding means the test is overdue: tell your security team, then sign in with it now.",
+    "Set an alert on every sign-in by a break-glass account. This needs sign-in logs sent to a Log Analytics workspace (a store for log data).",
+    "For every other account, ask the person or team that owns it whether the role is still needed. If a script or service uses the account, confirm that before you change anything.",
+    "Remove each role that is not needed. If the person has left or the account is unused, block its sign-in as well.",
+    "With Entra ID P2 or Entra ID Governance, use PIM (time-limited admin access), including its access reviews (scheduled checks of who has access) of admin roles, so unused roles are caught on a schedule."
+   ],
+   "links": [
+    {
+     "title": "Manage emergency access accounts in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/security-emergency-access"
+    },
+    {
+     "title": "Best practices for Microsoft Entra roles",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/best-practices"
+    },
+    {
+     "title": "What is Microsoft Entra Privileged Identity Management?",
+     "url": "https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-configure"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "guests": {
+   "group": "identity",
+   "title": "Guest accounts need a regular review",
+   "why": "Guests (accounts for outside people) usually sign in through their own organization, which you do not control. When a project ends, the guest account here often stays, with all the access it had, and keeps working for as long as the home account does.",
+   "steps": [
+    "Check first: many guests are partners or vendors who use Dynamics 365, Teams or SharePoint every day. Find the team that owns each group of guests before you remove anyone.",
+    "With Entra ID P2 or Entra ID Governance, set up recurring access reviews (scheduled checks on who needs access) for the groups and apps that guests use. Let group owners, or the guests themselves, confirm.",
+    "Reviews that target only inactive guests, and the inactive guest report, need Entra ID Governance or Entra Suite.",
+    "Without those licenses: export the guest list and send it to the teams that invited them. Ask who still needs access.",
+    "Block sign-in for guests nobody claims. Delete them only after a waiting period. A deleted guest can be restored for 30 days; after that, they need a new invitation.",
+    "Limit who can invite guests: Entra ID > External Identities > External collaboration settings > Guest invite settings."
+   ],
+   "links": [
+    {
+     "title": "Manage guest access with access reviews",
+     "url": "https://learn.microsoft.com/en-us/entra/id-governance/manage-guest-access-with-access-reviews"
+    },
+    {
+     "title": "Monitor and clean up stale guest accounts using access reviews",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/users/clean-up-stale-guest-accounts"
+    },
+    {
+     "title": "Configure external collaboration settings for B2B in Microsoft Entra External ID",
+     "url": "https://learn.microsoft.com/en-us/entra/external-id/external-collaboration-settings-configure"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "guests-none": {
+   "group": "identity",
+   "title": "No guest accounts in the directory",
+   "why": "There are no guest accounts (accounts for outside people), so no one outside the organization can sign in here as a guest. This is the lowest-risk setup for outside access.",
+   "steps": [
+    "No action needed.",
+    "Make sure this is on purpose: check Entra ID > External Identities > External collaboration settings > Guest invite settings. If nobody should invite guests, pick the option that limits invites to admin roles, or the one that turns them off.",
+    "If you start using guests, plan regular access reviews (scheduled checks on who needs access). They need Entra ID P2 or Entra ID Governance."
+   ],
+   "links": [
+    {
+     "title": "Configure external collaboration settings for B2B in Microsoft Entra External ID",
+     "url": "https://learn.microsoft.com/en-us/entra/external-id/external-collaboration-settings-configure"
+    },
+    {
+     "title": "Manage guest access with access reviews",
+     "url": "https://learn.microsoft.com/en-us/entra/id-governance/manage-guest-access-with-access-reviews"
+    }
+   ],
+   "owner": "Identity team",
+   "info": true
+  },
+  "app-high-privilege": {
+   "group": "identity",
+   "title": "Apps with powerful tenant-wide permissions",
+   "why": "These apps can act on their own, with no user signed in, across the whole tenant (your organization's Entra ID directory) or every mailbox. Some can read or send mail as anyone, change any file or site, or give themselves more rights. Anyone who steals an app's secret or certificate (its sign-in keys) gets the same power, and MFA (a second sign-in check) does not apply to apps.",
+   "steps": [
+    "Check first: for each app, find its owner and what it does. Removing a permission the app still uses will break it, so agree on each change with the owner and test it.",
+    "Review each app's grants at Entra ID > Enterprise apps > All applications > select the app > Permissions > Admin consent tab (approval that covers everyone). Remove what is not needed: open the menu (...) next to the permission and select Revoke permission.",
+    "Ask for a narrower permission where one exists. For example, Sites.Selected (only the sites you pick) can replace Sites.FullControl.All or Files.ReadWrite.All.",
+    "For mail permissions, limit each app to the mailboxes it needs with RBAC for Applications (an Exchange Online mailbox limit). Then remove the matching tenant-wide permission in Entra ID: the two add up, so the limit does nothing while it stays. The older application access policies also limit Entra permissions, but they are being replaced.",
+    "full_access_as_app works through EWS (an older way apps reach mail). Exchange Online starts turning EWS off in October 2026 and fully turns it off in April 2027, so move these apps to the Graph API (the newer way apps reach data).",
+    "Exchange.ManageAsApp lets an app run Exchange admin commands. What it can change depends on the admin role the app was given, so review that role as well."
+   ],
+   "links": [
+    {
+     "title": "Review permissions granted to enterprise applications",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-permissions"
+    },
+    {
+     "title": "Role Based Access Control for Applications in Exchange Online",
+     "url": "https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac"
+    },
+    {
+     "title": "Deprecation of Exchange Web Services in Exchange Online",
+     "url": "https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/deprecation-of-ews-exchange-online"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "app-owner-privileged": {
+   "group": "identity",
+   "title": "Owners of powerful apps can act as the app",
+   "why": "An app owner (a person who manages the app) can add a new secret (an app password) and then sign in as the app. That gives them all of the app's permissions, such as reading every mailbox, without any admin role. If an owner's account is taken over, the attacker gets the same power.",
+   "steps": [
+    "Check first: ask each app's team who maintains the app and who renews its secret today. Agree who keeps that job before you remove anyone.",
+    "Remove owners who have left, changed jobs, or no longer work on the app. Keep a short list of named people; two is a good minimum, so the app is never left without an owner.",
+    "Check both owner lists: Entra ID > Enterprise apps > All applications > select the app > Owners, and the app's own owner list in App registrations.",
+    "Treat the remaining owners like admins of that app: make sure they sign in with MFA (a second sign-in check), and include them when you review admin access.",
+    "Look at each app's Certificates & secrets page in App registrations for entries nobody can explain. Ask the app team before you remove any of them."
+   ],
+   "links": [
+    {
+     "title": "Overview of enterprise application ownership in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/overview-assign-app-owners"
+    },
+    {
+     "title": "Assign enterprise application owners",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-app-owners"
+    },
+    {
+     "title": "Add and manage application credentials in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity-platform/how-to-add-credentials"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "app-admin-roles": {
+   "group": "identity",
+   "title": "App admin roles can act as any app",
+   "why": "Application Administrator and Cloud Application Administrator can add a secret (an app password) to any app and then sign in as that app. That gives them the app's permissions too, even tenant-wide ones (covering the whole directory). This is why both are marked as privileged roles.",
+   "steps": [
+    "Check first: list who holds each role and what they use it for. Some may need it for only one app, or only now and then.",
+    "Remove the role from anyone who does not need it.",
+    "If someone manages only a few apps, give them the role on just those apps: Entra ID > App registrations > select the app > Roles and administrators > select the role > Add assignments.",
+    "With Entra ID P2 or Entra ID Governance, use PIM (time-limited admin access) so these roles are active only while someone needs them.",
+    "Keep the total number of privileged role assignments (roles with the PRIVILEGED label) under 10."
+   ],
+   "links": [
+    {
+     "title": "Microsoft Entra built-in roles",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/permissions-reference"
+    },
+    {
+     "title": "Assign Microsoft Entra roles",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/manage-roles-portal"
+    },
+    {
+     "title": "Best practices for Microsoft Entra roles",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/best-practices"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "app-cred-expired": {
+   "group": "identity",
+   "title": "Expired app secrets and certificates left behind",
+   "why": "An expired secret or certificate (an app password or key file) can no longer be used to sign in, so the direct risk is low. But old entries make it hard to see which credentials are live, and an app whose credentials have all expired may be abandoned while it still holds its permissions.",
+   "steps": [
+    "Check first: for each app, see whether it also has a secret or certificate that is still valid. If it does, the expired one is a leftover from an earlier renewal.",
+    "Remove leftovers at Entra ID > App registrations > select the app > Certificates & secrets. Delete only the expired entries.",
+    "If all of an app's secrets and certificates have expired, it cannot sign in with them and may no longer be used. Ask its owner. If nobody needs the app, remove its permissions first, and delete it only after a waiting period.",
+    "Going forward, use certificates instead of client secrets, keep secret lifetimes under 12 months, and use managed identities (sign-in with no stored secret) for apps that run in Azure."
+   ],
+   "links": [
+    {
+     "title": "Microsoft Entra recommendation: Remove unused credentials from apps (preview)",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/recommendation-remove-unused-credential-from-apps"
+    },
+    {
+     "title": "Add and manage application credentials in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity-platform/how-to-add-credentials"
+    },
+    {
+     "title": "Migrate applications away from secret-based authentication",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/migrate-applications-from-secrets"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "app-cred-expiring": {
+   "group": "identity",
+   "title": "App secrets and certificates expiring within 60 days",
+   "why": "When an app's secret or certificate (its sign-in key) expires, the app can no longer sign in. Whatever it runs, such as a data sync with Dynamics 365, stops until someone adds a new one, so renewing early avoids an outage.",
+   "steps": [
+    "Check first: for each credential, find the app owner and where the app keeps it, such as a key vault (a secure store for secrets) or a settings file. Some may be old leftovers that nothing uses; confirm that before you let them expire.",
+    "Before the old one expires, add a new secret or certificate at Entra ID > App registrations > select the app > Certificates & secrets.",
+    "Update the app to use the new credential and test it. Check the sign-in logs to make sure the app now uses the new one.",
+    "After the new one works, remove the old credential.",
+    "Where you can, switch to a managed identity or a federated credential (sign-in with no stored secret), so there is nothing to renew by hand. Otherwise, prefer certificates over client secrets."
+   ],
+   "links": [
+    {
+     "title": "Microsoft Entra recommendation: Renew expiring application credentials (preview)",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/recommendation-renew-expiring-application-credential"
+    },
+    {
+     "title": "Add and manage application credentials in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity-platform/how-to-add-credentials"
+    },
+    {
+     "title": "Migrate applications away from secret-based authentication",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/migrate-applications-from-secrets"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "nsg-admin-internet": {
+   "group": "network",
+   "title": "Remote admin or database port open to the internet",
+   "why": "An NSG (a set of firewall rules) on this VM or subnet lets any address on the internet try to connect to a remote-admin or database port. Automated tools scan the internet for these ports and keep guessing passwords, so one weak or reused password can be enough to get in. A VM taken over this way can then be used to attack other systems on your network.",
+   "steps": [
+    "Check first: ask the VM owner who connects on this port and from which network. A finance and operations development VM deployed by Lifecycle Services (LCS, Microsoft's deployment portal) sits in a resource group with the same name as its LCS environment.",
+    "Check first: on an LCS VM, keep the rule that lets the LCS addresses reach WinRM (Windows remote management) port 5986. LCS needs it to set up the VM and deploy packages. If 5986 is open to the internet, change its source to the LCS addresses listed on Microsoft's page instead of deleting the rule. Use the addresses for the LCS portal you sign in to, which can differ from the VM's Azure region.",
+    "Change the open rule's source (Any, Internet or 0.0.0.0/0) to your office or VPN outbound range. LCS allows RDP (Remote Desktop) port 3389 from anywhere by default, and Microsoft recommends limiting it to the clients that need it. For a database port, allow only the servers that use the database. Test with a new connection afterward.",
+    "To avoid a standing rule, use the company VPN (a private tunnel into your network) or Microsoft Defender for Cloud just-in-time VM access (ports opened only on request), which needs Defender for Servers Plan 2. Remove the always-open rule when you turn just-in-time access on, and on LCS VMs leave port 5986 out of its port list.",
+    "Microsoft's LCS security page names Azure Bastion (browser-based remote access) as an option for RDP, but Microsoft's LCS FAQ says Bastion has not been tested or supported with cloud-hosted environments. Treat Bastion as unsupported for LCS VMs.",
+    "If the finding says the NSG is not attached to anything, the rule has no effect today but applies as soon as someone attaches the NSG. Fix the rule now, or delete the unused NSG after its owner confirms it is not needed."
+   ],
+   "links": [
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    },
+    {
+     "title": "Enable just-in-time access",
+     "url": "https://learn.microsoft.com/en-us/azure/defender-for-cloud/enable-just-in-time-access"
+    },
+    {
+     "title": "Deploy and access development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/access-instances"
+    }
+   ],
+   "owner": "Network team",
+   "info": false
+  },
+  "nsg-admin-public-ip": {
+   "group": "network",
+   "title": "Unknown public IP addresses can reach admin ports",
+   "why": "Someone added a single public IP address to an NSG (a set of firewall rules) so they could reach a VM directly, usually from home, a hotel or a phone hotspot. Nobody tracks these addresses afterward. Home and mobile addresses are handed to other customers over time, so whoever gets that address next can reach the port too.",
+   "steps": [
+    "Check first: for each address, find out whose it is and why it was added. Ask the VM owner and its users, and read the rule's name and description. Removing it cuts off that person's direct access.",
+    "Remove the addresses nobody can explain, after telling the VM's users.",
+    "Send admin access through the company VPN (a private tunnel into your network) instead. Then record the VPN and office outbound ranges as Conditional Access IP named locations (saved, named address lists). In the Microsoft Entra admin center, go to Entra ID > Conditional Access > Named locations; you need at least the Conditional Access Administrator role. This report then treats those ranges as known. A named location only labels a range for sign-in policies. It does not change any NSG.",
+    "Where it fits, use Microsoft Defender for Cloud just-in-time VM access (ports opened only on request) instead of a standing rule. It needs Defender for Servers Plan 2. It opens the port only after a request, only from the requested address and only for a set time, then puts the rules back.",
+    "Limit who can add or change NSG rules; a separate finding lists them.",
+    "On development VMs from Lifecycle Services (LCS, Microsoft's deployment portal), keep the LCS project roles that can see the VM's local account passwords to a minimum. Project owner and Environment manager always see them; Project team member does not."
+   ],
+   "links": [
+    {
+     "title": "Conditional Access: Network assignment",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-assignment-network"
+    },
+    {
+     "title": "Just-in-time machine access in Microsoft Defender for Cloud",
+     "url": "https://learn.microsoft.com/en-us/azure/defender-for-cloud/just-in-time-access-overview"
+    },
+    {
+     "title": "Deploy and access development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/access-instances"
+    }
+   ],
+   "owner": "Network team",
+   "info": false
+  },
+  "nsg-admin-known-ip": {
+   "group": "network",
+   "title": "Admin ports limited to known addresses",
+   "why": "These rules in an NSG (a set of firewall rules) let remote-admin or database ports be reached only from your documented office or VPN ranges, or from the management addresses of Lifecycle Services (LCS, Microsoft's deployment portal). That is the pattern to aim for. Rules still go stale when offices move, VPNs change or VMs are retired.",
+   "steps": [
+    "Confirm each rule is still needed: the VM still exists, people still use the port, and the range is still yours.",
+    "When an office or VPN address changes, update the Conditional Access named location (the saved list of known ranges) and the NSG rules at the same time, so both stay correct.",
+    "For LCS addresses, compare each rule with the current list on Microsoft's one-box security page. Keep the rule for WinRM (Windows remote management) port 5986, because LCS uses it to set up and deploy to the VM.",
+    "Remove rules for VMs or offices that are gone, after checking with the owner."
+   ],
+   "links": [
+    {
+     "title": "Create, change, or delete a network security group",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/manage-network-security-group"
+    },
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    },
+    {
+     "title": "Conditional Access: Network assignment",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-assignment-network"
+    }
+   ],
+   "owner": "Network team",
+   "info": true
+  },
+  "nsg-azurecloud": {
+   "group": "network",
+   "title": "Admin or database port open to all Azure addresses",
+   "why": "The rule's source is the AzureCloud service tag (a Microsoft-managed address list), which covers all public addresses in Azure datacenters. That includes addresses other Azure customers use, so anyone with a VM or service in Azure can try to connect to this port. Microsoft says that in most cases you should not allow traffic from all Azure IPs for this reason.",
+   "steps": [
+    "Check first: find out which Azure service or VM needs this port, and ask its owner. Changing the rule can break that connection.",
+    "Replace AzureCloud with the narrowest source that works: that service's own service tag if it has one, or the exact addresses it uses. A regional AzureCloud tag is smaller but still includes other customers.",
+    "For your own VMs and services, connect over your virtual network or VPN instead of public addresses.",
+    "Remove the AzureCloud rule, then test the service that needed access."
+   ],
+   "links": [
+    {
+     "title": "Azure service tags overview for virtual network security",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/service-tags-overview"
+    },
+    {
+     "title": "Create, change, or delete a network security group",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/manage-network-security-group"
+    }
+   ],
+   "owner": "Network team",
+   "info": false
+  },
+  "nsg-web-open": {
+   "group": "network",
+   "title": "Web or other ports open to the internet",
+   "why": "These rules in an NSG (a set of firewall rules) let anyone on the internet reach ports other than admin or database ports, most often HTTPS web traffic on port 443. That is normal for a site meant to be public, but every open port is one more thing to patch and watch. Finance and operations development VMs deployed by Lifecycle Services (LCS, Microsoft's deployment portal) open 443 to the whole internet by default, even though usually only your own team uses them.",
+   "steps": [
+    "Check first: for each rule, find the app behind the port and who should reach it. Keep rules for sites that are meant to be public.",
+    "Check first: before narrowing 443 on an LCS VM, ask whether any tool or integration outside your network calls the environment's URL.",
+    "On LCS VMs, limit 443 to your office or VPN ranges. Microsoft notes that sign-in is still required on that port but recommends restricting it to the clients that need it, and LCS does not use 443 to deploy or manage the VM.",
+    "Close rules for test or old sites that nobody uses, after checking with the owner."
+   ],
+   "links": [
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    },
+    {
+     "title": "Create, change, or delete a network security group",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/manage-network-security-group"
+    }
+   ],
+   "owner": "Network team",
+   "info": false
+  },
+  "vm-public-no-nsg": {
+   "group": "network",
+   "title": "Internet-facing VM has no network security group",
+   "why": "This VM has a public IP address but no NSG (a set of firewall rules) on its network interface or its subnet. If the public IP is the older Basic SKU (pricing tier), every port the VM listens on is open to the internet. A Standard SKU public IP blocks inbound traffic until an NSG allows it, so the real exposure depends on the SKU, but in both cases nothing records what should be allowed.",
+   "steps": [
+    "Check first: open the VM's public IP address in the Azure portal and note its SKU. Basic means every listening port can be reached now; Standard means inbound traffic is already blocked. Microsoft retired Basic SKU public IPs on September 30, 2025, so plan to upgrade any that remain. Add the NSG first, because a Standard public IP lets nothing in without one.",
+    "Check first: list what must reach the VM from the internet, on which ports and from which addresses, so the new rules do not cut anyone off.",
+    "Create an NSG with allow rules for only those ports and sources, then attach it to the VM's network interface or its subnet. The NSG's default rules block all other inbound internet traffic.",
+    "If nothing needs to reach the VM from the internet, remove its public IP instead, once the owner agrees."
+   ],
+   "links": [
+    {
+     "title": "Public IP addresses",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/ip-services/public-ip-addresses"
+    },
+    {
+     "title": "Create, change, or delete a network security group",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/manage-network-security-group"
+    },
+    {
+     "title": "Azure network security groups overview",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/network-security-groups-overview"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "vm-public-ip": {
+   "group": "network",
+   "title": "VMs have their own public IP address",
+   "why": "A public IP address on a VM's network interface lets the internet reach the VM directly, held back only by the rules in its NSG (a set of firewall rules). One wrong or rushed rule then opens the VM to everyone. Admins can usually reach VMs through a VPN instead, with no public IP at all.",
+   "steps": [
+    "Check first: ask each VM's owner why it needs a public IP. A public web server may need one; an admin-only or back-end VM usually does not.",
+    "Check first: find anything that depends on the current address, such as a partner's allow list. Microsoft's page notes that removing the public IP removes the VM's access to the internet, so also check what the VM connects out to.",
+    "For admin access, use the company VPN (a private tunnel into your network) so RDP (Remote Desktop) and SSH (remote command-line login) never face the internet. Azure Bastion (browser-based remote access) is another option for most VMs, but Microsoft has not tested or supported it with development VMs from Lifecycle Services (LCS, Microsoft's deployment portal).",
+    "When the owner agrees, dissociate the public IP: on the VM's Overview page, select its public IP address; on that page's Overview, select Dissociate, then Yes. Keep the public IP resource until you are sure nothing needs it, then delete it after a final review."
+   ],
+   "links": [
+    {
+     "title": "Dissociate a public IP address from an Azure VM",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/ip-services/remove-public-ip-address-vm"
+    },
+    {
+     "title": "Azure network security best practices",
+     "url": "https://learn.microsoft.com/en-us/azure/security/fundamentals/network-best-practices"
+    },
+    {
+     "title": "Deploy and access development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/access-instances"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "allowlist-internet": {
+   "group": "network",
+   "title": "Allow list open to the entire internet",
+   "why": "This resource's allow list (addresses a firewall lets in) includes every internet address, 0.0.0.0 to 255.255.255.255, so the firewall filters nothing. Only the sign-in, key or token is left, and anyone can keep trying. Microsoft's network best practices say not to create allow rules this broad, because they give a false sense of security and are often found and exploited.",
+   "steps": [
+    "Check first: find out why the rule exists and what connects through it, such as apps, reports, data tools, Microsoft services or partners. Ask the resource owner whether it was added while troubleshooting; Microsoft advises that troubleshooting procedures should ban rules like this.",
+    "Where the service has an audit-only mode, as the IP firewall of Dataverse (Power Platform's data store) does, use it first to see which addresses really connect.",
+    "Replace the rule with the exact ranges that need access: your office and VPN outbound ranges, plus the published ranges of any service that must connect. Where the service supports it, use a private endpoint (a private address in your network) instead.",
+    "Remove the open rule and test every app that used it. The page linked for this resource type shows where its allow list is edited."
+   ],
+   "links": [
+    {
+     "title": "Azure network security best practices",
+     "url": "https://learn.microsoft.com/en-us/azure/security/fundamentals/network-best-practices"
+    },
+    {
+     "title": "What is an IP based access control list (ACL)?",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/ip-based-access-control-list-overview"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false,
+   "kindLinks": {
+    "SQL server": [
+     {
+      "title": "Azure SQL Database IP firewall rules",
+      "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/firewall-configure"
+     }
+    ],
+    "Synapse workspace": [
+     {
+      "title": "Azure Synapse Analytics IP firewall rules",
+      "url": "https://learn.microsoft.com/en-us/azure/synapse-analytics/security/synapse-workspace-ip-firewall"
+     }
+    ],
+    "Storage account": [
+     {
+      "title": "Create an IP network rule for Azure Storage",
+      "url": "https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security-ip-address-range"
+     }
+    ],
+    "NSG": [
+     {
+      "title": "Create, change, or delete a network security group",
+      "url": "https://learn.microsoft.com/en-us/azure/virtual-network/manage-network-security-group#work-with-security-rules"
+     }
+    ],
+    "App": [
+     {
+      "title": "Set up Azure App Service access restrictions",
+      "url": "https://learn.microsoft.com/en-us/azure/app-service/app-service-ip-restrictions"
+     }
+    ],
+    "Logic App": [
+     {
+      "title": "Secure access and data for workflows in Azure Logic Apps",
+      "url": "https://learn.microsoft.com/en-us/azure/logic-apps/logic-apps-securing-a-logic-app#restrict-inbound-ip-addresses"
+     }
+    ],
+    "Dataverse environment": [
+     {
+      "title": "IP firewall in Power Platform environments",
+      "url": "https://learn.microsoft.com/en-us/power-platform/admin/ip-firewall"
+     }
+    ]
+   }
+  },
+  "allowlist-broad": {
+   "group": "network",
+   "title": "Allow list includes very wide address ranges",
+   "why": "A range wider than a /16 covers more than 65,536 addresses, far more than one office or VPN normally uses. It usually lets in networks that belong to other organizations, and it hides which few addresses are really needed. Microsoft's network best practices warn that broad allow rules give a false sense of security.",
+   "steps": [
+    "Check first: find out what the range was meant to cover and who uses it. Ask the resource owner and the network team.",
+    "Replace it with the exact ranges you need, such as your office and VPN outbound ranges. Record those as Conditional Access IP named locations (a saved, named address list) so they are documented and this report treats them as known.",
+    "If a Microsoft or partner service needs access, use that service's published ranges or a private endpoint (a private address in your network) instead of a wide range.",
+    "Remove the wide rule once the new rules work, then test each app that used it. The page linked for this resource type shows where its allow list is edited."
+   ],
+   "links": [
+    {
+     "title": "Azure network security best practices",
+     "url": "https://learn.microsoft.com/en-us/azure/security/fundamentals/network-best-practices"
+    },
+    {
+     "title": "Conditional Access: Network assignment",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-assignment-network"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false,
+   "kindLinks": {
+    "SQL server": [
+     {
+      "title": "Azure SQL Database IP firewall rules",
+      "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/firewall-configure"
+     }
+    ],
+    "Synapse workspace": [
+     {
+      "title": "Azure Synapse Analytics IP firewall rules",
+      "url": "https://learn.microsoft.com/en-us/azure/synapse-analytics/security/synapse-workspace-ip-firewall"
+     }
+    ],
+    "Storage account": [
+     {
+      "title": "Create an IP network rule for Azure Storage",
+      "url": "https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security-ip-address-range"
+     }
+    ],
+    "NSG": [
+     {
+      "title": "Create, change, or delete a network security group",
+      "url": "https://learn.microsoft.com/en-us/azure/virtual-network/manage-network-security-group#work-with-security-rules"
+     }
+    ],
+    "App": [
+     {
+      "title": "Set up Azure App Service access restrictions",
+      "url": "https://learn.microsoft.com/en-us/azure/app-service/app-service-ip-restrictions"
+     }
+    ],
+    "Logic App": [
+     {
+      "title": "Secure access and data for workflows in Azure Logic Apps",
+      "url": "https://learn.microsoft.com/en-us/azure/logic-apps/logic-apps-securing-a-logic-app#restrict-inbound-ip-addresses"
+     }
+    ],
+    "Dataverse environment": [
+     {
+      "title": "IP firewall in Power Platform environments",
+      "url": "https://learn.microsoft.com/en-us/power-platform/admin/ip-firewall"
+     }
+    ]
+   }
+  },
+  "allowlist-unknown-ip": {
+   "group": "network",
+   "title": "Unexplained public IP addresses in allow lists",
+   "why": "These allow-list entries name single public addresses or small ranges that are outside all of your documented office and VPN ranges. Most were one person's connection, added for a quick fix and never removed. Whoever holds that address now, which can be someone else once a home or mobile address changes hands, can reach the resource up to its sign-in check.",
+   "steps": [
+    "Check first: find out whose address each entry is. Ask the resource owner, read the rule name, and compare the address with your office, VPN and Azure addresses. A storage account used by a finance and operations development VM must keep allowing that VM's own public IP, or features that use storage stop working.",
+    "A SQL firewall rule named ClientIPAddress_ followed by a date and time is the usual default name when someone adds their own current address in one click, for example with the Azure portal's option that adds your client IP, or with the firewall prompt in SQL Server Management Studio. Either way, it was one person's connection at that moment.",
+    "Remove the entries nobody can explain, after telling the resource owner. SQL firewall changes can take up to five minutes to apply.",
+    "Document the ranges you keep. In the Microsoft Entra admin center, go to Entra ID > Conditional Access > Named locations, and add each office and VPN outbound range as a named location. You need at least the Conditional Access Administrator role. A named location only labels a range for sign-in policies; it does not change any firewall by itself.",
+    "Leave Mark as trusted location off until you have checked the sign-in policies that use trusted locations, because they will start to treat the range as trusted.",
+    "For people whose address keeps changing, give them the VPN instead of adding their home address."
+   ],
+   "links": [
+    {
+     "title": "Conditional Access: Network assignment",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-assignment-network"
+    },
+    {
+     "title": "Azure SQL Database IP firewall rules",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/firewall-configure"
+    },
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "allowlist-inventory": {
+   "group": "network",
+   "title": "Inventory of allowed IP address rules",
+   "why": "This line counts every IP allow rule the tool read, across NSGs (sets of firewall rules), SQL and Synapse firewalls, storage accounts, apps, Logic Apps and the IP firewall of Dataverse (Power Platform's data store). It is not a problem by itself. It is the list to review, because rules are easy to add and rarely removed.",
+   "steps": [
+    "Give each rule an owner and a reason, for example in its name or description, or in a shared list.",
+    "Once or twice a year, ask each owner whether each rule is still needed. Remove the ones that are not, after checking that nothing still connects through them.",
+    "Keep office and VPN ranges documented as Conditional Access IP named locations (a saved, named address list), so reviewers can tell known ranges from unknown ones.",
+    "Remember that a known address is not proof of a trusted user. Keep strong sign-in on every resource, and prefer private endpoints (private addresses in your network) where a service supports them.",
+    "On SQL servers, also review the database-level firewall rules. They are stored inside each database and can only be managed with T-SQL (SQL commands)."
+   ],
+   "links": [
+    {
+     "title": "What is an IP based access control list (ACL)?",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-network/ip-based-access-control-list-overview"
+    },
+    {
+     "title": "Conditional Access: Network assignment",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-assignment-network"
+    },
+    {
+     "title": "Azure SQL Database IP firewall rules",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/firewall-configure"
+    }
+   ],
+   "owner": "Azure team",
+   "info": true
+  },
+  "sql-public": {
+   "group": "network",
+   "title": "Azure SQL server open to public networks",
+   "why": "Public network access (the server's internet-facing endpoint) is on, so any address the server's firewall rules allow can try to sign in from the internet. Those firewall rules and the database logins are then the only barriers. With private endpoints (private addresses in your network), clients connect over your own network and the public endpoint can be turned off.",
+   "steps": [
+    "Check first: list everything that connects to this server and from where: apps, reports, data tools and people. If finance and operations exports data here with BYOD (bring your own database), Microsoft notes that the finance and operations app must be able to reach the database, so keep a tested path for those exports.",
+    "Set up private endpoints for clients in Azure, and let offices reach them over VPN or ExpressRoute (a private line to Azure).",
+    "When every client works through a private endpoint, turn off public network access on the server's Networking page. Microsoft notes the change takes effect at once, and clients that still use the public endpoint lose their connection.",
+    "If public access has to stay on, for example for BYOD exports, keep the firewall rules to exact, known ranges and review them regularly."
+   ],
+   "links": [
+    {
+     "title": "Connectivity settings",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/connectivity-settings"
+    },
+    {
+     "title": "Azure Private Link for Azure SQL Database",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/private-endpoint-overview"
+    },
+    {
+     "title": "Bring your own database (BYOD)",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/analytics/export-entities-to-your-own-database"
+    }
+   ],
+   "owner": "Data team",
+   "info": false
+  },
+  "sql-allow-azure": {
+   "group": "network",
+   "title": "SQL server lets in all Azure addresses",
+   "why": "The setting 'Allow Azure services and resources to access this server' adds a firewall rule (0.0.0.0) that lets any resource in Azure try to connect, including resources in other customers' subscriptions. It does not limit access to your own subscription, so only logins and permissions stand in the way.",
+   "steps": [
+    "Check first: find which of your services rely on it. Microsoft lists services that commonly do, including App Service, Azure Functions, Data Factory, Stream Analytics, Logic Apps and Power BI.",
+    "Check first: does a Microsoft-managed finance and operations environment (sandbox or production) export data here with BYOD (bring your own database)? Those exports come from addresses in the PowerPlatformPlex service tag (a Microsoft-managed address list). If you turn this setting off, allow those ranges for your region instead, or the exports stop. You then have to keep the ranges current.",
+    "Move your own Azure services to private endpoints or virtual network rules, which Microsoft suggests instead of this setting.",
+    "Then turn the setting off in the server's networking settings and test each service. Firewall changes can take up to five minutes to apply.",
+    "If something must keep using it, write down why, and make sure logins and permissions limit access to authorized users only, as Microsoft advises."
+   ],
+   "links": [
+    {
+     "title": "Azure SQL Database IP firewall rules",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/firewall-configure"
+    },
+    {
+     "title": "Self-service deployment FAQ",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/deployment/deploymentfaq"
+    },
+    {
+     "title": "Bring your own database (BYOD)",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/analytics/export-entities-to-your-own-database"
+    }
+   ],
+   "owner": "Data team",
+   "info": false
+  },
+  "synapse-public": {
+   "group": "network",
+   "title": "Synapse workspace open to public networks",
+   "why": "Public network access is on, so the workspace accepts connections from public networks, held back only by its IP firewall rules and sign-in. With it turned off, people and services can connect only through private endpoints (private addresses in your network).",
+   "steps": [
+    "Check first: open the workspace's Overview page and see whether it has a managed virtual network (a private network Synapse runs). Only those workspaces can turn public network access off, and one cannot be added after the workspace is created. Without one, keep the IP firewall rules to exact, known ranges instead.",
+    "Check first: list who and what connects, such as Synapse Studio (the workspace's web tool) users, reports, pipelines, and Azure Synapse Link for Dataverse, which can copy finance and operations data into Synapse. Microsoft's Synapse Link troubleshooting guide says a public network access restriction can stop the link from reaching the workspace.",
+    "Create private endpoints for the people and tools that must keep working, and test them first.",
+    "Then, on the workspace's Networking page, set public network access to Disabled and select Save. Your firewall rules are kept and come back if you turn public access on again."
+   ],
+   "links": [
+    {
+     "title": "Azure Synapse Analytics connectivity settings",
+     "url": "https://learn.microsoft.com/en-us/azure/synapse-analytics/security/connectivity-settings"
+    },
+    {
+     "title": "Azure Synapse Analytics Managed Virtual Network",
+     "url": "https://learn.microsoft.com/en-us/azure/synapse-analytics/security/synapse-workspace-managed-vnet"
+    },
+    {
+     "title": "Azure Synapse Link for Dataverse troubleshooting guide",
+     "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/azure-synapse-link-troubleshooting-guide"
+    }
+   ],
+   "owner": "Data team",
+   "info": false
+  },
+  "synapse-allow-azure": {
+   "group": "network",
+   "title": "Synapse workspace lets in all Azure addresses",
+   "why": "The setting 'Allow Azure services and resources to access this workspace' lets connections in from all of Azure, including other customers' subscriptions. Anyone with a resource in Azure can then try to sign in, so only logins and permissions stand in the way.",
+   "steps": [
+    "Check first: find out what relies on it. Azure Synapse Link for Dataverse, which can copy finance and operations data into Synapse, must reach the workspace. Microsoft's troubleshooting guide tells you to turn this setting on when the link cannot.",
+    "If nothing needs it, turn it off in the workspace's networking settings, save, and test pipelines, reports and Synapse Studio (the workspace's web tool).",
+    "If Synapse Link or another service needs it, keep it, write down why, and make sure logins and permissions limit access to authorized users only, as Microsoft advises.",
+    "Keep the rest of the workspace's IP firewall list to exact, known ranges."
+   ],
+   "links": [
+    {
+     "title": "Azure Synapse Analytics IP firewall rules",
+     "url": "https://learn.microsoft.com/en-us/azure/synapse-analytics/security/synapse-workspace-ip-firewall"
+    },
+    {
+     "title": "Azure Synapse Link for Dataverse troubleshooting guide",
+     "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/azure-synapse-link-troubleshooting-guide"
+    }
+   ],
+   "owner": "Data team",
+   "info": false
+  },
+  "owner-sprawl": {
+   "group": "access",
+   "title": "Too many owners on a subscription",
+   "why": "An Owner can change anything in the subscription and can give anyone else access. Each extra owner is one more account an attacker could steal and use; Microsoft recommends no more than 3 owners per subscription. User Access Administrator is nearly as strong, because it can give itself the Owner role.",
+   "steps": [
+    "Check first: list who has these roles. Open the subscription, select Access control (IAM), then the Role assignments tab, then the Privileged tab. It lists Owner, User Access Administrator and the other admin roles at that level.",
+    "Check first: ask each owner what they use the role for before you change it. Keep two or three trusted owners so the subscription is never left without one. If an owner is an app, find out what it runs before you touch it.",
+    "People who build and run resources but never give out access do not need Owner. Give them a job function role (a role for one kind of resource, such as Virtual Machine Contributor) or Contributor, and only on the resource groups they work in.",
+    "Give the roles that stay to a small group instead of to each person, so access is easy to see and to remove.",
+    "With Microsoft Entra ID P2 or Microsoft Entra ID Governance, make the people who need Owner eligible in PIM (Privileged Identity Management, time-limited admin access) instead of permanent. Without that license, keep permanent owners to 3 or fewer and review the list every 3 months.",
+    "For a User Access Administrator who only hands out a few roles: on the Privileged card, select View assignments, then add a condition that limits which roles it can give, or remove the assignment if nobody needs it."
+   ],
+   "links": [
+    {
+     "title": "Best practices for Azure RBAC",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/best-practices"
+    },
+    {
+     "title": "List Azure role assignments using the Azure portal",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/role-assignments-list-portal"
+    },
+    {
+     "title": "Steps to assign an Azure role",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/role-assignments-steps"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "azure-network-writers": {
+   "group": "access",
+   "title": "Many accounts can change Azure network rules",
+   "why": "Owner, Contributor and Network Contributor can open a port or add an IP address to a firewall rule, which can put a server or database on the internet. Every person, group member and app with this right is one more account that could be stolen or make a mistake. User Access Administrator and Role Based Access Control Administrator can give themselves this right whenever they want.",
+   "steps": [
+    "Check first: leave the Contributor role on the app named Dynamics Deployment Services [wsfed-enabled] at subscription level. Microsoft's setup for LCS (Lifecycle Services, the Finance and Operations project portal) gives it that role so LCS can deploy to your subscription.",
+    "Check first: if your LCS Azure connector was set up with a named LCS user, that user must keep Contributor on the subscription directly. Microsoft says adding a group the user belongs to does not work.",
+    "For everyone else, ask what they need. People who only look need Reader. People who build in one area need a role on that resource group only, not on the whole subscription or management group.",
+    "Give access through small groups instead of one person at a time. Remember that everyone in a listed group has this access too.",
+    "Keep User Access Administrator and Role Based Access Control Administrator to very few people. Add a condition that limits which roles they can give. With Microsoft Entra ID P2 or Microsoft Entra ID Governance, make people's broad roles eligible in PIM (Privileged Identity Management, time-limited admin access). Without it, review this list every 3 months.",
+    "Add a safety net with Azure Policy (Azure's built-in rule checker). Assign the built-in definitions Management ports should be closed on your virtual machines and All network ports should be restricted on network security groups associated to your virtual machine. They report risky rules but do not block them, so review what they find."
+   ],
+   "links": [
+    {
+     "title": "Best practices for Azure RBAC",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/best-practices"
+    },
+    {
+     "title": "Complete the Azure Resource Manager onboarding process",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/deployment/arm-onboarding"
+    },
+    {
+     "title": "Azure Policy built-in definitions for Azure Virtual Machines",
+     "url": "https://learn.microsoft.com/en-us/azure/virtual-machines/policy-reference"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "sp-owner-subscription": {
+   "group": "access",
+   "title": "App identities have full control of a subscription",
+   "why": "A service principal is the sign-in identity of an app or script, and a managed identity (an app identity Azure manages) is one kind. With Owner or User Access Administrator, it can change anything in the subscription and grant more access. A leaked secret or certificate, or someone running code on a resource that uses the managed identity, gives an attacker that same full control.",
+   "steps": [
+    "Check first: for each app, find its owner and what it deploys or manages. Ask which actions it really needs, and change one app at a time so a broken deployment or tool is easy to spot.",
+    "Remove Owner or User Access Administrator where the app does not need it. Use the smallest role that does the job, such as a role for the one service it manages, and give it only on the resource groups it works in.",
+    "If the app must give out roles, such as a deployment pipeline (automated release job), use Role Based Access Control Administrator instead. On the Conditions tab, choose Allow user to only assign selected roles to selected principals (fewer privileges).",
+    "PIM (Privileged Identity Management, time-limited admin access) will not fix this. Microsoft says apps, service principals and managed identities cannot get eligible (switch on when needed) role assignments.",
+    "Protect how the app signs in. Use a managed identity where the code runs in Azure; otherwise use a certificate, not a client secret (an app password). Remove secrets and certificates that nothing uses any more, and keep the app's owner list short."
+   ],
+   "links": [
+    {
+     "title": "Best practices for Azure RBAC",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/best-practices"
+    },
+    {
+     "title": "Assign Azure roles using the Azure portal",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/role-assignments-portal"
+    },
+    {
+     "title": "Security best practices for application properties in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity-platform/security-best-practices-for-app-registration"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "sp-owner-mg": {
+   "group": "access",
+   "title": "App identities have full control of many subscriptions",
+   "why": "A role given at a management group (a folder that holds subscriptions) or at the root passes down to every subscription below it. A service principal (an app's sign-in identity) with Owner or User Access Administrator there can change anything in all of them and grant more access. One leaked secret or certificate would put all of those subscriptions at risk.",
+   "steps": [
+    "Check first: for each app, find its owner and what it does at this level. Ask which subscriptions and actions it really needs, and change one app at a time.",
+    "Move the role down to the subscriptions or resource groups the app manages, and use the smallest role that works. Microsoft advises a narrow scope, such as a resource group, over a management group or subscription.",
+    "If the app must give out roles, use Role Based Access Control Administrator with a condition that limits which roles it can assign.",
+    "Be strict at the top. Microsoft says anything assigned at the Tenant root group (the top management group) applies to every resource in the tenant, so keep only must-have assignments there.",
+    "Grants at root scope (/) need extra steps. A Global Administrator (top Entra ID admin) turns on Access management for Azure resources under Microsoft Entra ID > Manage > Properties, removes the grant with Azure PowerShell or the Azure CLI (command-line tool), then sets that toggle back to No."
+   ],
+   "links": [
+    {
+     "title": "Best practices for Azure RBAC",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/best-practices"
+    },
+    {
+     "title": "What are Azure management groups?",
+     "url": "https://learn.microsoft.com/en-us/azure/governance/management-groups/overview"
+    },
+    {
+     "title": "Elevate access to manage all Azure subscriptions and management groups",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/elevate-access-global-admin"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "storage-open-networks": {
+   "group": "access",
+   "title": "Storage accounts accept connections from any network",
+   "why": "These storage accounts (where Azure keeps files and data) take connections from anywhere on the internet. A key or token is still needed to read most data, but a leaked account key or SAS token (a shareable access link) would then work from any place. Limiting networks adds a second lock.",
+   "steps": [
+    "Check first: leave alone the accounts whose names start with dyn if they belong to LCS (Lifecycle Services, the Finance and Operations project portal) development environments. Microsoft says they hold code packages, and LCS must reach them to deploy.",
+    "Check first: you can limit an LCS environment's own storage account. Microsoft says it must still allow the VM's (virtual machine's) public IP address and your users' addresses, and that limits can break features such as export to Excel. Change one environment first and test.",
+    "Check first: for every other account, list the apps, Azure services, offices and partners that connect to it, and where they connect from.",
+    "Limit it: open the storage account, under Security + networking select Networking, select Manage, then choose Enable and Enabled from selected networks. Add the virtual networks, IP address ranges or resource instances that need access, and select Save.",
+    "Some Azure services cannot be matched by network or IP address. For those, add a trusted service exception (lets listed Azure services in) or a resource instance rule (lets one named Azure resource in), not access from all networks.",
+    "For accounts used only from inside Azure or over VPN (a private link to the company network), add a private endpoint (a private address in your network), then choose Disable for public network access."
+   ],
+   "links": [
+    {
+     "title": "Set the default public network access rule for an Azure Storage account",
+     "url": "https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security-set-default-access"
+    },
+    {
+     "title": "Azure Storage firewall rules and network access control",
+     "url": "https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security"
+    },
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "storage-anon-blob": {
+   "group": "access",
+   "title": "Storage accounts do not block anonymous reads",
+   "why": "While this setting is not turned off, anyone who can change a container (a folder for files) can make it readable by anyone on the internet, with no sign-in. A container that is already public can be read by any client that can reach the account. Microsoft recommends turning this off on every account unless a container truly must be public.",
+   "steps": [
+    "Check first: find containers that are public today. Microsoft's PowerShell example lists each container's anonymous access level; anything other than Off (Private in the portal) is public.",
+    "Check first: for each public container, see who reads it. In the account's Metrics, chart Blob Transactions with the Authentication filter set to Anonymous, and ask the container's owner if it must stay public.",
+    "Check first: take care with accounts used by LCS (Lifecycle Services, the Finance and Operations project portal). These are each cloud-hosted environment's own storage account and the accounts whose names start with dyn. Microsoft says LCS and some product features rely on them, so change one environment first and confirm an LCS deployment and export to Excel still work.",
+    "Turn it off: open the storage account, under Settings select Configuration, set Allow Blob anonymous access to Disabled, and save. This overrides every container setting; a static website's $web container stays public.",
+    "If a container truly must be public, move it to its own storage account kept only for public files, as Microsoft advises, and turn anonymous access off everywhere else.",
+    "Keep it from coming back: use Azure Policy (Azure's built-in rule checker) with an Audit effect (report only) first, then Deny (block), so no account can allow anonymous access again."
+   ],
+   "links": [
+    {
+     "title": "Remediate anonymous read access to blob data (Azure Resource Manager deployments)",
+     "url": "https://learn.microsoft.com/en-us/azure/storage/blobs/anonymous-read-access-prevent"
+    },
+    {
+     "title": "Configure anonymous read access for containers and blobs",
+     "url": "https://learn.microsoft.com/en-us/azure/storage/blobs/anonymous-read-access-configure"
+    },
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "storage-http": {
+   "group": "access",
+   "title": "Storage accounts accept unencrypted HTTP",
+   "why": "Plain HTTP is not encrypted. Data, and any SAS token (a shareable access link) sent with it, can be read or changed by anyone on the network path. Microsoft recommends requiring secure transfer (HTTPS only) on every storage account, and it is on by default for new ones.",
+   "steps": [
+    "Check first: find any app, device or script that uses http:// addresses for these accounts, and switch it to https:// first. Once secure transfer is required, every HTTP request is rejected.",
+    "Check first: Azure file shares connected over SMB (the Windows file-sharing protocol) without encryption, such as SMB 2.1, also stop working when secure transfer is required.",
+    "Check first: take care with accounts used by LCS (Lifecycle Services, the Finance and Operations project portal). These are each cloud-hosted environment's own storage account and the accounts whose names start with dyn. Microsoft says LCS and some product features rely on them, so change one environment first and confirm an LCS deployment and export to Excel still work.",
+    "Turn it on: open the storage account, under Settings select Configuration, set Secure transfer required to Enabled, and select Save.",
+    "Use Azure Policy (Azure's built-in rule checker) to flag other accounts. Microsoft lists a built-in policy for secure transfer in the Storage section of its built-in policies."
+   ],
+   "links": [
+    {
+     "title": "Require secure transfer to ensure secure connections",
+     "url": "https://learn.microsoft.com/en-us/azure/storage/common/storage-require-secure-transfer"
+    },
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "storage-tls": {
+   "group": "access",
+   "title": "Storage accounts allow TLS older than 1.2",
+   "why": "TLS (the encryption behind HTTPS) versions 1.0 and 1.1 are old and weak. Microsoft set February 3, 2026 as the date Azure Blob Storage stopped supporting them on all new and existing accounts, and its docs now list only TLS 1.2 and 1.3 as supported, so this is mostly cleanup. Setting the minimum to 1.2 makes each account's setting match and keeps audits and policy checks clean.",
+   "steps": [
+    "Check first: an app that still uses TLS 1.0 or 1.1 should already fail against these accounts. If one does, update its operating system and libraries; Microsoft suggests .NET Framework 4.7 or later and letting apps use the system's default TLS version.",
+    "Check first: take care with accounts used by LCS (Lifecycle Services, the Finance and Operations project portal). These are each cloud-hosted environment's own storage account and the accounts whose names start with dyn. Microsoft says LCS and some product features rely on them, so change one environment first and confirm an LCS deployment and export to Excel still work.",
+    "Set it: open the storage account, under Settings select Configuration, and under Minimum TLS version choose version 1.2. The change can take up to 30 seconds to apply.",
+    "Fix the source: accounts made with PowerShell, the Azure CLI (command-line tool) or a template get no minimum unless the script sets one, so set the minimum TLS version to TLS1_2 in those scripts and templates.",
+    "Use Azure Policy (Azure's built-in rule checker) with an Audit effect (report only), then Deny (block), so no account can be set below TLS 1.2 again."
+   ],
+   "links": [
+    {
+     "title": "Enforce a minimum required version of Transport Layer Security (TLS) for requests to a storage account",
+     "url": "https://learn.microsoft.com/en-us/azure/storage/common/transport-layer-security-configure-minimum-version"
+    },
+    {
+     "title": "Migrate to TLS 1.2 for Azure Blob Storage",
+     "url": "https://learn.microsoft.com/en-us/azure/storage/common/transport-layer-security-configure-migrate-to-tls2"
+    },
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "storage-shared-key": {
+   "group": "access",
+   "title": "Storage accounts still allow key-based access",
+   "why": "Shared Key means the account keys (master passwords for the whole account) and SAS tokens (shareable access links) made from them. Anyone holding a key can read and change all data in the account, and the logs show a key and an IP address, not which person used it. Microsoft recommends Microsoft Entra ID sign-in instead, and Conditional Access (sign-in rules) can protect an account only once Shared Key is off.",
+   "steps": [
+    "Check first: leave LCS (Lifecycle Services, the Finance and Operations project portal) cloud-hosted environment accounts alone. Microsoft says the environment's VM (virtual machine) reaches its storage account with a storage key kept in its configuration file. Turning key access off would block that. Accounts whose names start with dyn hold code packages for LCS deployments; do not change them without a test.",
+    "Check first: see who still uses keys. In the account's Metrics, chart Account Transactions with the Authentication filter set to Account Key and SAS, then use resource logs (detailed request logs) to find which IP addresses and apps send them.",
+    "Check first: a SAS made from a key (service SAS or account SAS) stops working too; only a user delegation SAS (a link signed with Entra ID) keeps working. The Azure portal also uses keys by default for Azure file shares, and Azure Cloud Shell keeps its files in a file share.",
+    "Move each app that uses keys to Microsoft Entra ID sign-in first, as Microsoft advises.",
+    "Then turn it off: under Settings select Configuration, and set Allow storage account key access to Disabled. Requests that use a key will then fail with error 403.",
+    "Assign the built-in policy Storage accounts should prevent shared key access in Audit mode (report only) to track the rest, and switch it to Deny (block) when you are ready."
+   ],
+   "links": [
+    {
+     "title": "Prevent Shared Key authorization for an Azure Storage account",
+     "url": "https://learn.microsoft.com/en-us/azure/storage/common/shared-key-authorization-prevent"
+    },
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "kv-access-policies": {
+   "group": "access",
+   "title": "Key vault still uses legacy access policies",
+   "why": "This key vault (a locked safe for passwords, keys and certificates) still uses the old access policy model. Microsoft warns that with this model, anyone with Contributor, Key Vault Contributor or another role that can change the vault can give themselves access to its keys, secrets and certificates. With the recommended Azure RBAC model (role-based access control), only Owner and User Access Administrator can grant that access.",
+   "steps": [
+    "Check first: write down every access policy on the vault (who has which key, secret and certificate rights) and every app, service and person that uses it.",
+    "Check first: before you switch, give each of them a matching built-in Key Vault role on this vault. Microsoft's migration page maps each access policy template to a role, and a few need a custom role. New roles can take several minutes to apply.",
+    "To do this you need Owner or User Access Administrator (to add roles) and Key Vault Contributor (to change the vault).",
+    "Change the vault's Permission model to Azure role-based access control, then test right away that every app and person can still do their work.",
+    "Until you switch, keep Contributor and Key Vault Contributor on this vault to as few people as possible, as Microsoft advises.",
+    "Assign the built-in policy Azure Key Vault should use RBAC permission model in Audit mode (report only) to find other vaults that still use access policies."
+   ],
+   "links": [
+    {
+     "title": "Azure role-based access control (Azure RBAC) vs. access policies (legacy)",
+     "url": "https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-access-policy"
+    },
+    {
+     "title": "Migrate to Azure RBAC from access policies",
+     "url": "https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-migration"
+    },
+    {
+     "title": "Azure Policy built-in definitions for Key Vault",
+     "url": "https://learn.microsoft.com/en-us/azure/key-vault/policy-reference"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "kv-public": {
+   "group": "access",
+   "title": "Key vault is open to all networks",
+   "why": "The vault's firewall is off, so any network on the internet can send it requests. A valid sign-in and permission are still needed, but a stolen app secret or token would work from anywhere. Limiting the vault to your own networks, or to a private endpoint (a private address in your network), adds a second lock.",
+   "steps": [
+    "Check first: list every app, deployment pipeline, service and person that reads this vault, and the network or public IP address each one connects from. Include any Dynamics 365 or partner integration that keeps its secrets here.",
+    "Check first: not every Azure service can use the trusted services exception; Microsoft names Azure DevOps as one that cannot. Such services need an IP rule, a virtual network rule or a private endpoint.",
+    "Limit it: open the vault, select Networking, then the Firewalls and virtual networks tab. Under Allow access from, select Allow public access from specific virtual networks and IP addresses, add the networks and public IP addresses you listed, and select Save.",
+    "If Azure services need the vault, also select Allow trusted Microsoft services to bypass this firewall. Admins outside the allowed addresses can still open the vault in the portal but may not be able to list its secrets.",
+    "Where everything that uses the vault runs in Azure or over VPN (a private link to the company network), set up a private endpoint first, then under Allow access from select Disable public access.",
+    "Assign the built-in policy Azure Key Vault should have firewall enabled or public network access disabled in Audit mode (report only) to find other open vaults."
+   ],
+   "links": [
+    {
+     "title": "Configure network security for Azure Key Vault",
+     "url": "https://learn.microsoft.com/en-us/azure/key-vault/general/network-security"
+    },
+    {
+     "title": "Azure Policy built-in definitions for Key Vault",
+     "url": "https://learn.microsoft.com/en-us/azure/key-vault/policy-reference"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "kv-delete-protection": {
+   "group": "access",
+   "title": "Key vault items can be permanently deleted",
+   "why": "Soft delete keeps a deleted vault, key, secret or certificate recoverable for 7 to 90 days, like a recycle bin. Purge protection locks that bin, so nobody, not even an admin or Microsoft, can erase items for good before the time is up. Without them, one mistake or one hostile insider can destroy keys that apps and encrypted data depend on.",
+   "steps": [
+    "Check first: both changes are one-way. Microsoft says soft delete cannot be turned off once it is on, and purge protection cannot be turned off by anyone, including Microsoft.",
+    "Check first: ask the vault's owner if any script deletes a vault, key, secret or certificate and then creates a new one with the same name. The name stays taken until the retention period (set when the vault was created) ends, and with purge protection on it cannot be freed sooner.",
+    "If soft delete is off, turn it on, for example by running az keyvault update with --enable-soft-delete true in the Azure CLI (command-line tool).",
+    "Turn on purge protection for vaults with production secrets or encryption keys, for example with az keyvault update and --enable-purge-protection true. Microsoft says most Azure services that integrate with Key Vault, such as Storage, require it.",
+    "Keep the right to purge (the Key Vault Purge Operator role, or purge rights in access policies) to very few people.",
+    "Assign the built-in policies Key vaults should have soft delete enabled and Key vaults should have deletion protection enabled in Audit mode (report only) to catch other vaults."
+   ],
+   "links": [
+    {
+     "title": "Azure Key Vault recovery management with soft delete and purge protection",
+     "url": "https://learn.microsoft.com/en-us/azure/key-vault/general/key-vault-recovery"
+    },
+    {
+     "title": "Azure Key Vault: soft-delete overview",
+     "url": "https://learn.microsoft.com/en-us/azure/key-vault/general/soft-delete-overview"
+    },
+    {
+     "title": "Azure Policy built-in definitions for Key Vault",
+     "url": "https://learn.microsoft.com/en-us/azure/key-vault/policy-reference"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "dv-audit-off": {
+   "group": "dynamics",
+   "title": "Dataverse auditing is turned off",
+   "why": "Auditing (a change history log) is off, so Dataverse (the database behind Dynamics 365) keeps no history of who created, changed or deleted records, or what the old values were. After a mistake, fraud or a break-in, you cannot see what happened. Table and column audit settings do nothing until auditing is on for the whole environment.",
+   "steps": [
+    "Check first: audit records count against Dataverse log storage (space set aside for logs). In the Power Platform admin center, select Licensing, then Dataverse, and check how much log space is left. Agree with your compliance owner how long to keep logs, and set that retention when you turn auditing on.",
+    "Turn auditing on (needs the System Administrator or System Customizer role): in the Power Platform admin center, select Security > Compliance, then the Auditing tile. Pick the environment, select Set up auditing, then Turn on auditing. Include Common entities across Dynamics 365 apps to also cover core tables such as account and contact, and set Event log retention.",
+    "To also record sign-ins, turn on Log access. It is on the environment's audit settings page: Manage > Environments, pick the environment, then Settings > Audit and logs > Audit settings.",
+    "Check that the tables and columns that matter are switched on too. In Power Apps, the table setting is Audit changes to its data and the column setting is Enable auditing.",
+    "Test it: change a test record, open it, select the Related tab, then Audit History, and confirm the change is listed."
+   ],
+   "links": [
+    {
+     "title": "Manage Dataverse auditing",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-dataverse-auditing"
+    },
+    {
+     "title": "Dataverse capacity-based storage details",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/capacity-storage"
+    }
+   ],
+   "owner": "Dynamics 365 admins",
+   "info": false
+  },
+  "dv-table-audit-off": {
+   "group": "dynamics",
+   "title": "Auditing is off for key tables",
+   "why": "Even with auditing (a change history log) on for the environment, Dataverse only records tables that are switched on one by one. The listed tables usually hold core business data, and right now changes to them leave no history of who changed what or what the old value was.",
+   "steps": [
+    "Check first: auditing busy tables adds to Dataverse log storage (space set aside for logs). Check what is left in the Power Platform admin center under Licensing, then Dataverse.",
+    "Quick option for common tables: in the Power Platform admin center, the Auditing tile under Security > Compliance offers Common entities across Dynamics 365 apps, which covers account, contact and other common tables.",
+    "For other tables: in Power Apps, pick the environment and select Dataverse > Tables. Open the table, select Edit, then Edit table properties. Expand Advanced options, select Audit changes to its data, select Save, then publish the table. Microsoft suggests doing this inside your own solution (a package of app changes) so it can move between environments.",
+    "Check the important columns too: open each column, expand Advanced options and make sure Enable auditing is selected. Columns with auditing off are not recorded.",
+    "Test it: change a test record and confirm the change shows on the record's Audit History (Related tab)."
+   ],
+   "links": [
+    {
+     "title": "Manage Dataverse auditing",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-dataverse-auditing"
+    },
+    {
+     "title": "Configure auditing",
+     "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/auditing/configure"
+    },
+    {
+     "title": "Dataverse capacity-based storage details",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/capacity-storage"
+    }
+   ],
+   "owner": "Dynamics 365 admins",
+   "info": false
+  },
+  "dv-custom-table-audit-off": {
+   "group": "dynamics",
+   "title": "Some custom tables are not audited",
+   "why": "Custom tables (tables your team added) often hold your own business data. With their auditing (change history) off, nobody can see who changed or deleted a record, or what it said before.",
+   "steps": [
+    "Check first: go through the list with the app owner and mark which tables hold business or personal data. Tables used only for logs, staging or temporary data may not need auditing; write that decision down.",
+    "Check Dataverse log storage before turning on busy tables, since every audited change adds a record (Power Platform admin center, Licensing, then Dataverse).",
+    "For each table that needs it: in Power Apps, select Dataverse > Tables, open the table, select Edit, then Edit table properties. Expand Advanced options, select Audit changes to its data, select Save, then publish. Do this inside your own solution (a package of app changes) so the setting reaches every environment.",
+    "If the setting cannot be changed, the table likely came in a managed solution (a locked release package) whose publisher blocked it. Record it as an exception or ask the publisher.",
+    "Keep auditing on for the environment as well; table settings record nothing without it."
+   ],
+   "links": [
+    {
+     "title": "Manage Dataverse auditing",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-dataverse-auditing"
+    },
+    {
+     "title": "Configure auditing",
+     "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/auditing/configure"
+    },
+    {
+     "title": "Dataverse capacity-based storage details",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/capacity-storage"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "dv-no-custom-role": {
+   "group": "dynamics",
+   "title": "No customer-built security roles detected",
+   "why": "Security roles (sets of allowed actions) decide what each person can see and change. Built-in roles are made for common tasks, so when no role fits a job, people can end up with a bigger built-in role than they need. This check only sees roles made directly in the environment, so roles you ship in a managed solution (a locked release package) need a manual look.",
+   "steps": [
+    "Check first: see which roles exist and who holds them. In the Power Platform admin center, select Manage > Environments, pick the environment, then Settings > Users + permissions > Security roles.",
+    "Ask the team that builds your apps whether they ship their own roles in a managed solution. To check a role by hand, in Power Apps select Solutions, open a solution that contains the role, select it, then Advanced > See solution layers. The Solution column shows which solution delivered it.",
+    "If no tailored roles exist, build them: on the Security roles page select + New role, or pick an existing role and select Copy security role. Grant only the tables and actions each job needs. Microsoft suggests starting from the App Opener or Basic User role.",
+    "Build and test the roles in a development or test environment, ideally inside a solution. Then give them to people in Production and remove the broader roles they no longer need."
+   ],
+   "links": [
+    {
+     "title": "Create or edit a security role to manage access",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/create-edit-security-role"
+    },
+    {
+     "title": "Security roles and privileges for Dataverse",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/security-roles-privileges"
+    },
+    {
+     "title": "Solution layers",
+     "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/solution-layers"
+    }
+   ],
+   "owner": "Dynamics 365 admins",
+   "info": false
+  },
+  "dv-unmanaged-solutions": {
+   "group": "dynamics",
+   "title": "Unmanaged solutions found where managed are expected",
+   "why": "An unmanaged solution (an editable package of app changes) is meant for development. Outside development it usually means changes were imported or made by hand: they can skip testing, they sit on top of your tested release and decide how it behaves, and they stay live even if the solution is deleted.",
+   "steps": [
+    "Check first: confirm the environment type. Unmanaged solutions are normal in a development environment. Test and Production environments should only get managed solutions (locked release packages).",
+    "Do not delete these solutions to fix this. Deleting an unmanaged solution removes only its container; the changes inside it stay live.",
+    "For each solution, find its owner and confirm the same solution exists in a development environment and in source control (a versioned store for code). If this is the only copy, export it as unmanaged and store it safely before any cleanup.",
+    "From now on, make changes only in development and deploy them as managed solutions. Power Platform pipelines (automated, tracked deployments) do this and keep a copy of every release. Target environments must be Managed Environments (premium admin features), which need premium licenses.",
+    "Plan the cleanup with the app team. Removing unmanaged changes (Remove active customizations) cannot be undone and can lose data, so rehearse it on a copy of Production first."
+   ],
+   "links": [
+    {
+     "title": "Solution concepts",
+     "url": "https://learn.microsoft.com/en-us/power-platform/alm/solution-concepts-alm"
+    },
+    {
+     "title": "Overview of pipelines in Power Platform",
+     "url": "https://learn.microsoft.com/en-us/power-platform/alm/pipelines"
+    },
+    {
+     "title": "Solution layers",
+     "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/solution-layers"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "dv-sysadmin-people": {
+   "group": "dynamics",
+   "title": "People with full System Administrator rights",
+   "why": "System Administrator (full control of the environment) can see, change and delete every record and change all security settings. Each extra holder is one more account that a stolen password or a simple mistake can turn into full control. The risk is lower in a test environment, unless it holds a copy of real data.",
+   "steps": [
+    "Check first: list who holds the role. In the Power Platform admin center, select Manage > Environments, pick the environment, then Settings > Users + permissions > Security roles. Select System Administrator, then More actions (...) > Members. Ask each person's manager what they really need. Look hardest at guests (#EXT# in the name, people from outside).",
+    "Keep a small, named group of admins. For everyone else, make a scoped role (access limited to the job) by copying a predefined role such as Basic User and adding only what the job needs.",
+    "Give the new role first and check the person can still do their work. Then, on the Members page, select the user, select Remove, and confirm.",
+    "Leave the Delegated admin system account as it is. It is how a partner's delegated admin access (admin rights you gave a partner) shows up, and Microsoft says not to change the roles of these built-in accounts.",
+    "When no partner needs admin access any more, a Microsoft 365 admin opens Settings > Partner relationships in the Microsoft 365 admin center, selects the partner, selects Remove roles, then Yes. Agree this with the partner first: it removes their admin roles across your Microsoft 365 services, not just Dynamics 365. The business relationship itself stays."
+   ],
+   "links": [
+    {
+     "title": "Security roles and privileges for Dataverse",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/security-roles-privileges"
+    },
+    {
+     "title": "System and application users",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/system-application-users"
+    },
+    {
+     "title": "Manage Microsoft-certified solution provider partner relationships",
+     "url": "https://learn.microsoft.com/en-us/microsoft-365/commerce/manage-partners?view=o365-worldwide"
+    }
+   ],
+   "owner": "Dynamics 365 admins",
+   "info": false
+  },
+  "dv-sysadmin-apps-own": {
+   "group": "dynamics",
+   "title": "App accounts have full System Administrator access",
+   "why": "An application user (an app's own login to Dataverse) with System Administrator can read, change or delete anything in the environment. If the app's secret or certificate (its password) leaks, or the app has a bug, the damage is not limited to the data the app needs.",
+   "steps": [
+    "Check first: ask each app's owner, or the vendor for a third-party app, what the app does in Dataverse: which tables, and whether it reads, creates, changes or deletes. Changing the role of a live integration without this can break it.",
+    "Build a custom security role with only those rights, for example by copying a predefined role (Copy security role), and keep it in a solution so it can move with the app. Test the app with it in a sandbox (test environment) first.",
+    "Switch the role: in the Power Platform admin center, select Manage > Environments, pick the environment, then Settings > Users + permissions > Application users. Select the app, select Edit security roles, select the new role, clear System Administrator, and select Save.",
+    "Watch the app's runs and errors for a few days. Keep a note of the old setting so you can switch back quickly if something fails."
+   ],
+   "links": [
+    {
+     "title": "Manage application users in the Power Platform admin center",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-application-users"
+    },
+    {
+     "title": "Use single-tenant server-to-server authentication",
+     "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/use-single-tenant-server-server-authentication"
+    },
+    {
+     "title": "Create or edit a security role to manage access",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/create-edit-security-role"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "dv-sysadmin-apps-unread": {
+   "group": "dynamics",
+   "title": "Unchecked app accounts hold System Administrator",
+   "why": "Many of Microsoft's own platform app accounts (built-in service logins) hold System Administrator by design. This run could not tell them apart from apps your team or a vendor added, so one of your own apps with full control could be hiding in this list.",
+   "steps": [
+    "Check first: do not change roles on the platform app accounts. Microsoft says these built-in accounts and their roles should not be changed, to prevent service outages.",
+    "In the Power Platform admin center, select Manage > Environments, pick the environment, then Settings > Users + permissions > Application users. Select Filter, then Platform, to list the platform accounts. Any account with System Administrator that is not on that list needs a closer look.",
+    "For each of those, select it, select Details and copy its Microsoft Entra application ID (the app's unique ID). In the Microsoft Entra admin center, go to Entra ID > Enterprise apps > All applications and search by that ID; the Application Type filter shows whether it is a Microsoft application.",
+    "Give your own and vendor apps a scoped role (a role with only the rights the app needs) instead of System Administrator, after testing it with the app owner.",
+    "For the next run, let the assessment read the list of app identities in Microsoft Entra (service principals) so it can sort these accounts for you."
+   ],
+   "links": [
+    {
+     "title": "Manage application users in the Power Platform admin center",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-application-users"
+    },
+    {
+     "title": "System and application users",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/system-application-users"
+    },
+    {
+     "title": "Quickstart: View enterprise applications",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/view-applications-portal"
+    }
+   ],
+   "owner": "Dynamics 365 admins",
+   "info": false
+  },
+  "dv-sysadmin-apps-noowner": {
+   "group": "dynamics",
+   "title": "Ownerless app accounts hold System Administrator",
+   "why": "These app accounts have full control of the environment, but no owner could be found for them. Some may be Microsoft platform services, which is expected; others may be left over from a deleted app, or belong to an app nobody is watching.",
+   "steps": [
+    "Check first: in the Power Platform admin center, select Manage > Environments, pick the environment, then Settings > Users + permissions > Application users. Select each account, select Details, and copy its Microsoft Entra application ID (the app's unique ID).",
+    "On the same page, select Filter, then Platform, and compare names with the list of system-provided application users. Leave those accounts and their roles alone; Microsoft says changing them can cause outages.",
+    "Look up each remaining ID in the Microsoft Entra admin center: open the enterprise applications list, select All applications, set Application Type to Microsoft Applications, and search by the ID. A match means Microsoft owns the app. Some Microsoft apps do not show in this list at all, so no match is not proof of a problem.",
+    "If it is your app or a vendor's, record a named owner and give it a scoped role (only the rights it needs). If the app no longer exists, select Deactivate on the Application users page, wait to make sure nothing breaks, then reassign any records it owns and delete it."
+   ],
+   "links": [
+    {
+     "title": "Manage application users in the Power Platform admin center",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-application-users"
+    },
+    {
+     "title": "Verify first-party Microsoft applications in sign-in reports",
+     "url": "https://learn.microsoft.com/en-us/troubleshoot/entra/entra-id/governance/verify-first-party-apps-sign-in"
+    },
+    {
+     "title": "System and application users",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/system-application-users"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "dormant-admins-dataverse": {
+   "group": "dynamics",
+   "title": "Inactive accounts still hold System Administrator",
+   "why": "An admin account nobody uses is a quiet risk: if its password leaks, nobody notices the sign-in, and the account has full control of the environment. Guest accounts (people from outside your company) add risk, because their sign-in security is run by their home organization.",
+   "steps": [
+    "Check first: confirm the last sign-in in the Microsoft Entra admin center. Go to Entra ID > Users, select the user and look at the Sign-ins tile, or use Manage view > Edit columns to add Last interactive sign-in time. An account used only by a script may show no interactive sign-ins, so ask before you act.",
+    "Ask the account owner and their manager whether the access is still needed. For a guest, also ask whether they need any access to your systems at all.",
+    "If not, remove the role: in the Power Platform admin center, select Manage > Environments, pick the environment, then Settings > Users + permissions > Security roles. Select System Administrator, then More actions (...) > Members, select the user, select Remove, and confirm.",
+    "If it is an emergency access account (a spare admin for outages), write that down, keep its credentials locked away, and alert on every sign-in. Microsoft advises testing these accounts at least every 90 days, so 90+ days with no sign-in also means a test is overdue."
+   ],
+   "links": [
+    {
+     "title": "How to detect and investigate inactive user accounts",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-manage-inactive-user-accounts"
+    },
+    {
+     "title": "Manage emergency access accounts in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/security-emergency-access"
+    },
+    {
+     "title": "Security roles and privileges for Dataverse",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/security-roles-privileges"
+    }
+   ],
+   "owner": "Dynamics 365 admins",
+   "info": false
+  },
+  "dv-ipfirewall-off": {
+   "group": "dynamics",
+   "title": "Dataverse IP firewall is not turned on",
+   "why": "Without the IP firewall (a block on unknown network addresses), Dataverse does not check where each request comes from. A stolen access token (a temporary sign-in pass) can be used from any location until it expires; with the firewall on, it is blocked outside your allowed ranges.",
+   "steps": [
+    "Check first: the IP firewall only works in Managed Environments (premium admin features for environments), included with standalone Power Apps, Power Automate or Dynamics 365 licenses. Users in environments where it blocks also need a Microsoft 365 or Office 365 A5, E5 or G5 plan, or a matching compliance add-on listed on the IP firewall page. Confirm both before planning.",
+    "Ask the network team for the public IP ranges of your offices, VPN and proxies, in CIDR format (a short way to write ranges, like 203.0.113.0/24). Also list partner or integration services that call Dataverse.",
+    "In the Power Platform admin center (needs a Power Platform admin role), select Security > Identity and access > IP firewall. Pick the environment and select Set up IP firewall. Turn IP Firewall On, enter the allowed ranges, keep Enable IP firewall in audit-only mode on (it logs but never blocks), and select Save.",
+    "Leave audit-only mode on for at least a week. Review which addresses would have been blocked, and add service tags (named groups of cloud addresses) for Power Automate and connectors that call in.",
+    "Turn on blocking in a test environment first, then in Production. App accounts are let through by default (Allow access for all application users); clearing it blocks third-party apps outside your ranges, so list the apps that must still connect first."
+   ],
+   "links": [
+    {
+     "title": "IP firewall in Power Platform environments",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/ip-firewall"
+    },
+    {
+     "title": "Managed environments overview",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/managed-environment-overview"
+    },
+    {
+     "title": "Managed connectors outbound IP addresses",
+     "url": "https://learn.microsoft.com/en-us/connectors/common/outbound-ip-addresses"
+    }
+   ],
+   "owner": "Dynamics 365 admins",
+   "info": false
+  },
+  "dv-ipfirewall-audit": {
+   "group": "dynamics",
+   "title": "Dataverse IP firewall is in audit-only mode",
+   "why": "In audit-only mode, the IP firewall (a block on unknown network addresses) records which addresses call Dataverse but lets every request through. Until blocking is on, a stolen access token (a temporary sign-in pass) can still be used from anywhere.",
+   "steps": [
+    "Check first: review the log of addresses that would have been blocked. Microsoft suggests at least a week in audit-only mode before blocking. The IP firewall page shows how to download this log with the Dataverse API (audit action 118).",
+    "Add any missing safe ranges (offices, VPN, proxies, partners) and service tags (named groups of cloud addresses) for Power Automate or connectors that call Dataverse. Changes take about 5 to 10 minutes to apply.",
+    "Test blocking in a test environment first. From an address outside the list, the request should be rejected with a message that access to your IP is blocked.",
+    "Then in the Power Platform admin center, select Security > Identity and access > IP firewall, open the settings for the environment, turn off Enable IP firewall in audit-only mode, and select Save. Watch for blocked users or flows in the first days, and be ready to turn audit-only mode back on."
+   ],
+   "links": [
+    {
+     "title": "IP firewall in Power Platform environments",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/ip-firewall"
+    },
+    {
+     "title": "Managed connectors outbound IP addresses",
+     "url": "https://learn.microsoft.com/en-us/connectors/common/outbound-ip-addresses"
+    }
+   ],
+   "owner": "Dynamics 365 admins",
+   "info": false
+  },
+  "fn-anon-open": {
+   "group": "integration",
+   "title": "Functions open to the internet with no key",
+   "why": "Anyone on the internet who finds the address can run these functions. No key, sign-in or IP rule stops them. If a function reads or changes business data, a stranger can do the same.",
+   "steps": [
+    "Check first: with the app owner, list who calls each function, such as other apps, Logic Apps, partners or webhooks (automatic web calls). Confirm whether each one is meant to be public. Any caller you miss will break when you lock the function down.",
+    "If a function should not be public, change its authLevel (the function's key setting) from anonymous to function in the code and redeploy. Then share the function key (a secret callers must send) only with the callers that need it. In the Node.js v4 model (newer JavaScript functions), a function with no authLevel set is anonymous.",
+    "For callers that can sign in, a real sign-in is stronger than a key. Turn on App Service authentication (built-in sign-in for the app) and require it, or put API Management (an Azure gateway for APIs) in front.",
+    "Limit who can reach the app with access restrictions (IP allow and deny rules) in its networking settings. If only internal systems call it, use a private endpoint (a private network address) and turn off public network access.",
+    "After each change, test every caller and watch for access denied errors (401 or 403)."
+   ],
+   "links": [
+    {
+     "title": "Securing Azure Functions",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-functions/security-concepts"
+    },
+    {
+     "title": "Azure Functions HTTP trigger",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook-trigger"
+    },
+    {
+     "title": "Use private endpoints for Azure App Service apps",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/overview-private-endpoint"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "fn-anon-unknown": {
+   "group": "integration",
+   "title": "Functions with no key and unknown exposure",
+   "why": "These functions take calls with no key. The tool could not read the app's settings, so it cannot tell if only trusted networks can reach them or the whole internet can.",
+   "steps": [
+    "Check the app by hand. In the portal, open the function app, go to Settings > Networking, and look at Public network access and any access restriction rules (IP allow and deny rules).",
+    "Then open Settings > Authentication and see if App Service authentication (built-in sign-in for the app) is on and requires a sign-in.",
+    "If the app takes traffic from any IP and does not require a sign-in, treat these functions as open to the internet. Then follow the steps for that finding.",
+    "Fix the read problem so the next scan can check it. Under Access control (IAM) > Check access, confirm the account the assessment uses has read access, such as the Reader role (read-only access to resources). Then run the assessment again."
+   ],
+   "links": [
+    {
+     "title": "Set up Azure App Service access restrictions",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/app-service-ip-restrictions"
+    },
+    {
+     "title": "Authentication and authorization in Azure App Service and Azure Functions",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/overview-authentication-authorization"
+    },
+    {
+     "title": "Quickstart: Check access for a user to a single Azure resource",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/check-access"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "fn-anon-limited": {
+   "group": "integration",
+   "title": "Functions with no key, guarded only by network rules",
+   "why": "Only callers from allowed networks can reach these functions, which lowers the risk. But anyone on those networks can call them with no key or sign-in, so the network rules are the only lock.",
+   "steps": [
+    "Check first: review the app's access restriction rules (IP allow and deny rules) under Settings > Networking, or its private endpoint (a private network address). Confirm each allowed network still needs to call these functions.",
+    "Make sure the unmatched rule action (what happens to unlisted traffic) is Deny. If it is Allow, everyone not on a deny rule still gets in.",
+    "If the app uses a private endpoint, make sure public network access is turned off. A private endpoint alone does not block public traffic.",
+    "Watch for broad rules. A rule for a service tag (a named group of Azure IPs), such as Azure Front Door, lets in traffic from any instance of that service. To allow only yours, also filter on the HTTP header (a label sent with each request) that carries your instance ID.",
+    "Add a second lock: set authLevel (the function's key setting) to function, or turn on App Service authentication (built-in sign-in for the app). Tell callers first, because they will need the key or a sign-in."
+   ],
+   "links": [
+    {
+     "title": "Set up Azure App Service access restrictions",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/app-service-ip-restrictions"
+    },
+    {
+     "title": "Use private endpoints for Azure App Service apps",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/overview-private-endpoint"
+    },
+    {
+     "title": "Securing Azure Functions",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-functions/security-concepts"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "fn-anon-auth": {
+   "group": "integration",
+   "title": "Functions with no key that rely on sign-in",
+   "why": "Callers must sign in through App Service authentication (built-in sign-in for the app) before these functions run. That blocks strangers. But by default, any user in your Entra ID tenant (your organization's user directory) can get a sign-in token for it.",
+   "steps": [
+    "Check first: in the function app, open Settings > Authentication and confirm that requests without a sign-in are rejected or sent to sign-in, not let through.",
+    "Limit who can sign in. Set up the app's registration in Entra ID so only the users or groups that need it are allowed, or check user roles in the code. Test a real caller before and after.",
+    "These functions depend on that one setting. If someone turns authentication off, they become open to anyone, so consider also setting authLevel (the function's key setting) to function."
+   ],
+   "links": [
+    {
+     "title": "Authentication and authorization in Azure App Service and Azure Functions",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/overview-authentication-authorization"
+    },
+    {
+     "title": "Azure Functions HTTP trigger",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook-trigger"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "app-config-unread": {
+   "group": "integration",
+   "title": "App settings could not be read",
+   "why": "The tool could not read this app's settings. So it could not check the TLS version (how traffic is encrypted), FTP (an old file upload method), remote debugging or network rules. Any of those problems could be hiding here.",
+   "steps": [
+    "Make sure the account the assessment uses can read the app. Open the app and go to Access control (IAM) > Check access. Look for a role such as Reader (read-only access to resources) on the app, its resource group or the subscription.",
+    "Run the assessment again. A one-time error can also cause this.",
+    "Until the tool can read it, check the settings by hand. Under Settings > Configuration > General settings, look at the minimum TLS version, FTP state and remote debugging. Under Settings > Networking, look at the access restrictions."
+   ],
+   "links": [
+    {
+     "title": "Quickstart: Check access for a user to a single Azure resource",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/check-access"
+    },
+    {
+     "title": "Configure an App Service app",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/configure-common"
+    },
+    {
+     "title": "Set up Azure App Service access restrictions",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/app-service-ip-restrictions"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "app-https-off": {
+   "group": "integration",
+   "title": "Apps do not force HTTPS",
+   "why": "These apps still answer over plain HTTP (unencrypted web traffic). Anything sent that way, such as passwords, keys or business data, can be read or changed by someone on the network path.",
+   "steps": [
+    "Check first: find callers that still use http:// addresses, such as scripts, webhooks (automatic web calls) or other apps, and change them to https://. A caller that cannot follow a redirect will fail after the change.",
+    "If the app uses its own domain name, make sure that domain has a certificate binding (a certificate attached to the domain) first. It shows as Secured under Settings > Custom domains.",
+    "In the portal, open the app, go to Settings > Configuration > General settings, turn on HTTPS Only, and save the change.",
+    "Test the app over HTTPS and confirm the callers still work.",
+    "If App Service authentication (built-in sign-in for the app) is on, it redirects requests to HTTPS by default. Turn on HTTPS Only anyway, so this does not depend on that setting."
+   ],
+   "links": [
+    {
+     "title": "Configure an App Service app",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/configure-common"
+    },
+    {
+     "title": "Enable HTTPS for a custom domain in Azure App Service",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/configure-ssl-bindings"
+    },
+    {
+     "title": "Authentication and authorization in Azure App Service and Azure Functions",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/overview-authentication-authorization"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "app-tls-old": {
+   "group": "integration",
+   "title": "Apps accept old TLS versions",
+   "why": "TLS (the encryption for web traffic) versions 1.0 and 1.1 are old and no longer considered secure. Allowing them makes it easier for an attacker to read or tamper with traffic to the app.",
+   "steps": [
+    "Check first: ask the app owner which systems call the app. Old clients, devices or scripts that only support TLS 1.0 or 1.1 will fail to connect after the change, so update them first.",
+    "In the portal, open the app and go to Settings > Configuration > General settings. Set the minimum inbound TLS version to 1.2, or 1.3 if every caller supports it, and save the change.",
+    "The SCM site (the app's deployment tools site) has its own minimum TLS version. Check it too.",
+    "To catch apps that slip back, use the built-in Azure Policy (automatic rule checking) named 'App Service apps should use the latest TLS version'."
+   ],
+   "links": [
+    {
+     "title": "What is TLS/SSL in Azure App Service?",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/overview-tls"
+    },
+    {
+     "title": "Configure an App Service app",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/configure-common"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "app-ftp": {
+   "group": "integration",
+   "title": "Apps allow plain FTP deployments",
+   "why": "Plain FTP (an old file upload method) sends the deployment user name, password and files without encryption. Anyone who captures them can upload their own code to the app.",
+   "steps": [
+    "Check first: ask the app owner how they deploy. To see real use, send the app's AppServiceAuditLogs (the log of deployment sign-ins) to Azure Monitor (the Azure logging service) and look for FTP sign-ins.",
+    "In the portal, open the app, go to Settings > Configuration > General settings, and under Platform settings set FTP state to FTPS only (FTP with encryption). If nobody uses FTP, choose Disabled. Select Save.",
+    "FTPS only needs a minimum inbound TLS version (the encryption level) of 1.2 or higher, so check that setting on the same page.",
+    "If nobody deploys with FTP, also set FTP Basic Auth Publishing Credentials (user name and password sign-in) to Off on the same page. Then use a deployment method that signs in with Entra ID (your organization's user directory)."
+   ],
+   "links": [
+    {
+     "title": "Deploy your app to Azure App Service using FTP/S",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/deploy-ftp"
+    },
+    {
+     "title": "Disable basic authentication in Azure App Service deployments",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/configure-basic-auth-disable"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "app-remote-debug": {
+   "group": "integration",
+   "title": "Remote debugging left on",
+   "why": "Remote debugging lets a developer connect a debugging tool to the live app. It is meant for short troubleshooting sessions; left on, it is one more way into a production app.",
+   "steps": [
+    "Check first: ask the app owner if someone is debugging right now. If so, agree on when they will finish.",
+    "In the portal, open the app, go to Settings > Configuration > General settings, turn off remote debugging in the Debugging section, and save the change.",
+    "This setting should turn off by itself after 48 hours. If you keep finding it on, find out who or what turns it back on, such as a deployment script or template."
+   ],
+   "links": [
+    {
+     "title": "Configure an App Service app",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/configure-common"
+    },
+    {
+     "title": "Securing Azure Functions",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-functions/security-concepts"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "app-open-ip": {
+   "group": "integration",
+   "title": "Apps reachable from any IP address",
+   "why": "Anyone on the internet can reach these apps. That is normal for a public website. For an internal API or Function App, the app's own key or sign-in is then the only thing keeping strangers out.",
+   "steps": [
+    "Check first: decide with each app owner if the app is meant to be public. If it is a public website, no change is needed; record that decision.",
+    "For internal APIs and Function Apps, list who must reach the app, such as office networks, partners and other Azure services, so real callers are not locked out.",
+    "Add allow rules under Settings > Networking > Public network access, then select Save. By default, once you add one rule, all traffic not on the list is denied.",
+    "Set rules for the SCM site (the app's deployment tools site) too, or select Use main site rules.",
+    "If only internal systems call the app, add a private endpoint (a private network address) and then turn off public network access."
+   ],
+   "links": [
+    {
+     "title": "Set up Azure App Service access restrictions",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/app-service-ip-restrictions"
+    },
+    {
+     "title": "Use private endpoints for Azure App Service apps",
+     "url": "https://learn.microsoft.com/en-us/azure/app-service/overview-private-endpoint"
+    }
+   ],
+   "owner": "Network team",
+   "info": false
+  },
+  "logicapp-open-trigger": {
+   "group": "integration",
+   "title": "Logic App HTTP triggers open to any IP",
+   "why": "The trigger URL (the address that starts the workflow) holds a SAS (a signed secret in the URL). Anyone who has the full URL can start the workflow from anywhere. These URLs can end up in scripts, tickets and emails, and the workflow runs with all the access its connections have.",
+   "steps": [
+    "Check first: for each workflow, list every system that calls its trigger URL and the IP addresses it calls from. Any caller you miss will be blocked.",
+    "Consumption logic apps (run on shared hosting): open the logic app, go to Settings > Workflow settings, and under Allowed inbound IP addresses choose Specific IP ranges. Enter the callers' ranges. If only a parent workflow calls it through the built-in Azure Logic Apps action, choose Only other Logic Apps.",
+    "Standard logic apps (run on dedicated hosting): add access restriction rules (IP allow and deny rules) under Settings > Networking. It works the same way as for an App Service app.",
+    "For stronger control on Consumption logic apps, add an authorization policy (rules for which tokens are accepted) under Settings > Authorization. Include at least the Issuer and Audience claims (fields inside the token). Then move callers to sign-in tokens from Entra ID (your organization's user directory).",
+    "When all callers use tokens, disable SAS authentication through the REST API (a direct Azure management call). This stops every caller still using the old URL. Standard logic apps can use Easy Auth (built-in App Service sign-in) instead.",
+    "If a trigger URL may have been shared too widely, regenerate the access key (the secret behind the URLs) under Settings > Access Keys. All old URLs stop working, so give callers the new ones."
+   ],
+   "links": [
+    {
+     "title": "Secure access and data for workflows in Azure Logic Apps",
+     "url": "https://learn.microsoft.com/en-us/azure/logic-apps/set-up-security-permissions"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  },
+  "automation-runas": {
+   "group": "integration",
+   "title": "Automation accounts still use Run As connections",
+   "why": "Runbooks (saved automation scripts) use this connection to sign in as an app registration (an app's identity in Entra ID). Run As accounts got Contributor (can change almost any resource) on the subscription by default, and anyone who edits runbooks here can use it. The Run As feature was retired on 30 September 2023.",
+   "steps": [
+    "Check first: find which runbooks use the connection. Search the runbook code for Get-AutomationConnection and the connection name, or use the check scripts linked in the migration guide. Note the app registration (its application ID is stored in the connection) and every role it holds.",
+    "Turn on the Automation account's managed identity (an Azure sign-in with no secret) under Account Settings > Identity. Give it only the roles the runbooks need, not Contributor on the whole subscription.",
+    "Copy each runbook, change the copy to sign in with Connect-AzAccount -Identity, and test it. When it works, update the real runbook the same way.",
+    "Before deleting anything, confirm that no runbook still uses the connection and that recent jobs succeed with the managed identity.",
+    "Then remove the old app's role assignments under Access control (IAM) > Role assignments > Remove. Also remove the connection and its certificate from the Automation account.",
+    "Last, delete the app registration: in Entra ID, open App registrations, select the app, and select Delete on its Overview page."
+   ],
+   "links": [
+    {
+     "title": "Migrate from an existing Run As account to Managed identities",
+     "url": "https://learn.microsoft.com/en-us/azure/automation/migrate-run-as-accounts-managed-identity"
+    },
+    {
+     "title": "Delete an Azure Automation Run As account",
+     "url": "https://learn.microsoft.com/en-us/azure/automation/delete-run-as-account"
+    },
+    {
+     "title": "Remove Azure role assignments",
+     "url": "https://learn.microsoft.com/en-us/azure/role-based-access-control/role-assignments-remove"
+    }
+   ],
+   "owner": "Azure team",
+   "info": false
+  },
+  "apiconn-dormant": {
+   "group": "integration",
+   "title": "Connections run as an inactive user account",
+   "why": "This API connection (a saved sign-in a workflow uses) acts as a user who has not signed in successfully for 90 days or more. If that person left, the account may be unwatched but still have access. A connection that is used often usually shows recent sign-ins, so this one may also be unused or broken.",
+   "steps": [
+    "Check first: find the workflows that use this connection and look at their recent run history. A logic app lists its connections under Development Tools > API connections, or under Workflows > Connections for Standard logic apps (the dedicated hosting type). Failed runs at steps that use this connection can mean it is already broken.",
+    "Look up the account in Entra ID (your organization's user directory) under Entra ID > Users, and check its sign-ins. Find out who owns it and whether it is a dedicated service account or a person's account.",
+    "If no workflow needs the connection anymore, agree with the workflow owner before you remove it.",
+    "If the workflow is still needed, sign the connection in again with a dedicated service account that has an owner. If that connection type supports it, use a managed identity (an Azure sign-in with no secret) instead. Then test the workflow.",
+    "Once the workflows run on the new account, review the old account and disable it if nothing else uses it."
+   ],
+   "links": [
+    {
+     "title": "How to detect and investigate inactive user accounts",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-manage-inactive-user-accounts"
+    },
+    {
+     "title": "What are connectors in workflows for Azure Logic Apps?",
+     "url": "https://learn.microsoft.com/en-us/azure/connectors/introduction"
+    },
+    {
+     "title": "Edit and manage logic app workflows in the Azure portal",
+     "url": "https://learn.microsoft.com/en-us/azure/logic-apps/manage-logic-apps-with-azure-portal"
+    }
+   ],
+   "owner": "Identity team",
+   "info": false
+  },
+  "apiconn-named": {
+   "group": "integration",
+   "title": "Connections tied to one person's account",
+   "why": "This API connection (a saved sign-in a workflow uses) acts with one person's access and in their name. It can stop working when they leave, change their password or lose access, and it may reach more than the workflow needs.",
+   "steps": [
+    "Check first: list the workflows that use each connection and what they do, so you know what could break.",
+    "Get a dedicated service account with a named owner, and give it only the access the workflow needs in each target system.",
+    "Sign the connection in again with that account, or create a new connection with it and switch each workflow step to it. Test each workflow.",
+    "Where the connection type supports it, use a managed identity (an Azure sign-in with no secret) instead of any account. The documented examples are mostly Azure services, such as Blob Storage, Key Vault and SQL Server.",
+    "The Fin & Ops Apps (Dynamics 365) connection has no managed identity option, and its service principal (an app's own sign-in) option is listed but not supported. Use a dedicated service account for it."
+   ],
+   "links": [
+    {
+     "title": "What are connectors in workflows for Azure Logic Apps?",
+     "url": "https://learn.microsoft.com/en-us/azure/connectors/introduction"
+    },
+    {
+     "title": "Authenticate workflow connections to protected Azure resources by using managed identities in Azure Logic Apps",
+     "url": "https://learn.microsoft.com/en-us/azure/logic-apps/authenticate-with-managed-identity"
+    },
+    {
+     "title": "Fin & Ops Apps (Dynamics 365)",
+     "url": "https://learn.microsoft.com/en-us/connectors/dynamicsax/"
+    }
+   ],
+   "owner": "App owners",
+   "info": false
+  }
+ },
+ "checks": {
+  "1.1": {
+   "plain": "Checks that people sign in to Dynamics 365 with Microsoft Entra ID (Microsoft's cloud service for work accounts and sign-in), so every account is managed in one place.",
+   "links": [
+    {
+     "title": "Authenticating to Power Platform services",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/security/authenticate-services"
+    },
+    {
+     "title": "Create users",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/create-users"
+    }
+   ]
+  },
+  "1.2": {
+   "plain": "Checks that each person's Dynamics 365 security roles (sets of allowed actions) give only the access their job needs.",
+   "links": [
+    {
+     "title": "Create or edit a security role to manage access",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/create-edit-security-role"
+    },
+    {
+     "title": "Security roles and privileges for Dataverse",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/security-roles-privileges"
+    }
+   ]
+  },
+  "1.3": {
+   "plain": "Checks that each Dynamics 365 environment (a separate space with its own data, such as test or production) is linked to a security group (a managed list of people), so only members of that group, plus admins, can be users there.",
+   "links": [
+    {
+     "title": "Control user access to environments with security groups and licenses",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/control-user-access"
+    }
+   ]
+  },
+  "1.4": {
+   "plain": "Checks that Conditional Access policies (rules that control sign-in) require strong sign-in, like MFA (a second proof of identity, such as a phone prompt), for everyone who uses Dynamics 365.",
+   "links": [
+    {
+     "title": "Require multifactor authentication for all users",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/policy-all-users-mfa-strength"
+    },
+    {
+     "title": "Configure identity and access management",
+     "url": "https://learn.microsoft.com/en-us/power-platform/guidance/adoption/conditional-access"
+    }
+   ]
+  },
+  "1.5": {
+   "plain": "Checks that the computers and phones used for Dynamics 365 are enrolled in Microsoft Intune (Microsoft's device management service).",
+   "links": [
+    {
+     "title": "Get started with your Microsoft Intune deployment",
+     "url": "https://learn.microsoft.com/en-us/intune/fundamentals/get-started"
+    },
+    {
+     "title": "Enrollment guide: Enroll Windows client devices in Microsoft Intune",
+     "url": "https://learn.microsoft.com/en-us/intune/device-enrollment/windows/guide"
+    }
+   ]
+  },
+  "1.6": {
+   "plain": "Checks that Conditional Access lets people open Dynamics 365 only on devices that Intune marks as compliant (meeting the company's security rules).",
+   "links": [
+    {
+     "title": "Require device compliance with Conditional Access",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/policy-all-users-device-compliance"
+    },
+    {
+     "title": "Use compliance policies to set rules for devices you manage with Intune",
+     "url": "https://learn.microsoft.com/en-us/intune/device-security/compliance/overview"
+    }
+   ]
+  },
+  "2.1": {
+   "plain": "Checks that each app or service that connects to Dynamics 365 on its own uses its own application user (an account for an app, not a person) with only the access it needs.",
+   "links": [
+    {
+     "title": "Manage application users in the Power Platform admin center",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-application-users"
+    },
+    {
+     "title": "Use single-tenant server-to-server authentication",
+     "url": "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/use-single-tenant-server-server-authentication"
+    }
+   ]
+  },
+  "2.2": {
+   "plain": "Checks that the company keeps a current list of the people and apps that can access Dynamics 365, and reviews that list on a schedule.",
+   "links": [
+    {
+     "title": "What are access reviews?",
+     "url": "https://learn.microsoft.com/en-us/entra/id-governance/access-reviews-overview"
+    },
+    {
+     "title": "Review permissions granted to enterprise applications",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-permissions"
+    }
+   ]
+  },
+  "2.3": {
+   "plain": "Checks that powerful admin roles are switched on only when needed through PIM (Privileged Identity Management, time-limited admin access), and that risky pairs of tasks, such as receiving goods and paying for them, are split between different people.",
+   "links": [
+    {
+     "title": "Assign Microsoft Entra roles in Privileged Identity Management",
+     "url": "https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-how-to-add-role-to-user"
+    },
+    {
+     "title": "Set up segregation of duties",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/fin-ops/sysadmin/set-up-segregation-duties"
+    }
+   ]
+  },
+  "2.4": {
+   "plain": "Checks that access to each environment (such as test or production) is managed through Microsoft Entra security groups (managed lists of people) instead of adding users one at a time.",
+   "links": [
+    {
+     "title": "Control user access to environments with security groups and licenses",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/control-user-access"
+    },
+    {
+     "title": "Manage group teams",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-group-teams"
+    }
+   ]
+  },
+  "2.5": {
+   "plain": "Repeats check 2.4 (Microsoft's template lists it twice): access to each environment is managed through security groups (managed lists of people).",
+   "links": [
+    {
+     "title": "Control user access to environments with security groups and licenses",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/control-user-access"
+    },
+    {
+     "title": "Manage group teams",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-group-teams"
+    }
+   ]
+  },
+  "3.1": {
+   "plain": "Checks that Dynamics 365 data is encrypted (scrambled so outsiders cannot read it) when stored and when sent, and whether the company needs to hold its own encryption key.",
+   "links": [
+    {
+     "title": "Data storage and governance in Power Platform",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/security/data-storage"
+    },
+    {
+     "title": "Manage your customer-managed encryption key",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/customer-managed-key"
+    }
+   ]
+  },
+  "3.2": {
+   "plain": "Checks that Customer Lockbox is turned on, so Microsoft engineers must get the company's approval before they can see company data during support work.",
+   "links": [
+    {
+     "title": "Securely access customer data by using Customer Lockbox in Power Platform and Dynamics 365",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/about-lockbox"
+    }
+   ]
+  },
+  "3.3": {
+   "plain": "Checks that personal and sensitive data is found and tagged with sensitivity labels (tags like Confidential that add protection) using Microsoft Purview (Microsoft's data protection tools).",
+   "links": [
+    {
+     "title": "Learn about sensitivity labels",
+     "url": "https://learn.microsoft.com/en-us/purview/sensitivity-labels"
+    },
+    {
+     "title": "Connect to and manage Microsoft Dataverse in Microsoft Purview",
+     "url": "https://learn.microsoft.com/en-us/purview/register-scan-dataverse"
+    }
+   ]
+  },
+  "3.4": {
+   "plain": "Checks that the company has decided how long Dynamics 365 records and audit logs are kept, and that the settings match that decision.",
+   "links": [
+    {
+     "title": "Dataverse long term data retention overview",
+     "url": "https://learn.microsoft.com/en-us/power-apps/maker/data-platform/data-retention-overview"
+    },
+    {
+     "title": "Manage Dataverse auditing",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-dataverse-auditing"
+    }
+   ]
+  },
+  "3.5": {
+   "plain": "Checks how email, appointments, contacts and tasks sync between Exchange (the email system behind Outlook) and Dynamics 365 through server-side synchronization, and that this link is set up securely.",
+   "links": [
+    {
+     "title": "Server-side synchronization",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/server-side-synchronization"
+    },
+    {
+     "title": "Connect to Exchange Online",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/connect-exchange-online"
+    }
+   ]
+  },
+  "3.6": {
+   "plain": "Checks that only approved user mailboxes and queue mailboxes (shared team inboxes) can send and receive email through Dynamics 365.",
+   "links": [
+    {
+     "title": "Connect to Exchange Online",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/connect-exchange-online"
+    },
+    {
+     "title": "Edit mailboxes",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/create-forward-mailboxes-edit-mailboxes"
+    }
+   ]
+  },
+  "4.1": {
+   "plain": "Checks that auditing (a record of who changed what, and when) is turned on in each Dynamics 365 environment and for important record types, such as accounts and contacts.",
+   "links": [
+    {
+     "title": "Manage Dataverse auditing",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-dataverse-auditing"
+    },
+    {
+     "title": "Configure database logging",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/sysadmin/configure-manage-database-log"
+    }
+   ]
+  },
+  "4.2": {
+   "plain": "Checks that sign-ins and user activity, such as viewing records or exporting them to Excel, are logged so they can be reviewed later.",
+   "links": [
+    {
+     "title": "View Microsoft Dataverse and model-driven app activity logs in Microsoft Purview",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/activity-logging-auditing/activity-logs-dataverse-model-driven-apps"
+    },
+    {
+     "title": "Manage Dataverse auditing",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/manage-dataverse-auditing"
+    }
+   ]
+  },
+  "4.3": {
+   "plain": "Checks that a SIEM (a central security monitoring system), such as Microsoft Sentinel, collects Dynamics 365 and Power Platform logs and raises alerts on suspicious activity.",
+   "links": [
+    {
+     "title": "Detect threats to your organization",
+     "url": "https://learn.microsoft.com/en-us/power-platform/guidance/adoption/threat-detection"
+    },
+    {
+     "title": "Connect Microsoft Power Platform and Microsoft Dynamics 365 Customer Engagement to Microsoft Sentinel",
+     "url": "https://learn.microsoft.com/en-us/azure/sentinel/business-applications/deploy-power-platform-solution"
+    }
+   ]
+  },
+  "4.4": {
+   "plain": "Checks that Dynamics 365 activity logs reach Microsoft Purview audit (Microsoft's audit log search) and Microsoft Sentinel (Microsoft's security monitoring system).",
+   "links": [
+    {
+     "title": "Power Platform activity logs and auditing in Microsoft Purview",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/activity-logging-auditing/activity-logs-overview"
+    },
+    {
+     "title": "Deploy for Dynamics 365 Finance and Operations",
+     "url": "https://learn.microsoft.com/en-us/azure/sentinel/dynamics-365/deploy-dynamics-365-finance-operations-solution"
+    }
+   ]
+  },
+  "5.1": {
+   "plain": "Checks that security roles are built around real job duties, kept as small as possible, and documented.",
+   "links": [
+    {
+     "title": "Security roles and privileges for Dataverse",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/security-roles-privileges"
+    },
+    {
+     "title": "Role-based security",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/sysadmin/role-based-security"
+    }
+   ]
+  },
+  "5.2": {
+   "plain": "Checks that extra access limits are used where needed: on sensitive fields, on single records, and by business unit (a division set up inside Dynamics 365).",
+   "links": [
+    {
+     "title": "Column-level security to control access",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/field-level-security"
+    },
+    {
+     "title": "Ownership-based security in Microsoft Dataverse",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/wp-security-cds"
+    }
+   ]
+  },
+  "5.3": {
+   "plain": "Checks that data policies (rules that keep company data from flowing to the wrong services) control which connectors (links to other services) apps and flows can use together, and that sensitive data is labeled and protected.",
+   "links": [
+    {
+     "title": "Data policies",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/wp-data-loss-prevention"
+    },
+    {
+     "title": "Manage data policies",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/prevent-data-loss"
+    }
+   ]
+  },
+  "6.1": {
+   "plain": "Checks that the Azure services that pass data between Dynamics 365 and other systems (such as Logic Apps and Function Apps) require sign-in and are not open to the whole internet.",
+   "links": [
+    {
+     "title": "Secure access and data for workflows in Azure Logic Apps",
+     "url": "https://learn.microsoft.com/en-us/azure/logic-apps/set-up-security-permissions"
+    },
+    {
+     "title": "Securing Azure Functions",
+     "url": "https://learn.microsoft.com/en-us/azure/azure-functions/security-concepts"
+    }
+   ]
+  },
+  "6.2": {
+   "plain": "Checks that app passwords (client secrets), keys and certificates are stored safely, replaced before they expire, and swapped for safer sign-in methods where possible.",
+   "links": [
+    {
+     "title": "Migrate applications away from secret-based authentication",
+     "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/migrate-applications-from-secrets"
+    },
+    {
+     "title": "Add and manage application credentials in Microsoft Entra ID",
+     "url": "https://learn.microsoft.com/en-us/entra/identity-platform/how-to-add-credentials"
+    }
+   ]
+  },
+  "7.1": {
+   "plain": "Checks that the company has a written and practiced plan for what to do if Dynamics 365, or the accounts that run it, are attacked.",
+   "links": [
+    {
+     "title": "Recommendations for security incident response",
+     "url": "https://learn.microsoft.com/en-us/power-platform/well-architected/security/incident-response"
+    },
+    {
+     "title": "Incident response planning",
+     "url": "https://learn.microsoft.com/en-us/security/operations/incident-response-planning"
+    }
+   ]
+  },
+  "7.2": {
+   "plain": "Checks that the servers and apps around Dynamics 365 are scanned for known weaknesses, and that penetration tests (approved, planned hacking tests) are done.",
+   "links": [
+    {
+     "title": "Configure vulnerability scanning for machines",
+     "url": "https://learn.microsoft.com/en-us/azure/defender-for-cloud/auto-deploy-vulnerability-assessment"
+    },
+    {
+     "title": "Penetration testing",
+     "url": "https://learn.microsoft.com/en-us/azure/security/fundamentals/pen-testing"
+    }
+   ]
+  },
+  "8.1": {
+   "plain": "Checks that Dynamics 365 data is stored in the countries or regions required by the laws and contracts the company must follow.",
+   "links": [
+    {
+     "title": "Microsoft Dynamics 365 and Power Platform data residency documentation",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/get-started/availability"
+    },
+    {
+     "title": "Choose the region when setting up an environment",
+     "url": "https://learn.microsoft.com/en-us/power-platform/admin/regions-overview"
+    }
+   ]
+  }
+ },
+ "manual": [
+  {
+   "key": "lcs-project-roles",
+   "title": "LCS roles can reveal VM admin passwords",
+   "why": "In Lifecycle Services (LCS, Microsoft's Finance and Operations project portal), anyone with the Project owner or Environment manager role can see the local account passwords for the project's cloud-hosted VMs (virtual machines). Microsoft says these passwords cannot be hidden from those two roles. A former contractor, or someone given the role by mistake, could use them to sign in to a development VM as an administrator.",
+   "steps": [
+    "Sign in to Lifecycle Services and open each project. Select Project users from the menu or the Project users tile.",
+    "List everyone who has the Project owner or Environment manager role. Mark partner and vendor accounts, and anyone who left or changed jobs. Also list Operations users: that role can open the Cloud-hosted environments tool, and Microsoft does not say whether it can see the passwords. Repeat this list every quarter.",
+    "Check first: ask each person's manager if they still manage cloud-hosted environments. Keep at least two trusted Project owners from your own company so the project never loses its owner.",
+    "Change people who do not manage environments to Project team member. Microsoft says this role hides the local account passwords and cannot manage cloud-hosted environments.",
+    "Keep the number of Microsoft Entra tenant administrators small. Microsoft says they become LCS organization admins when they sign in and can add themselves as Project owner on any project the tenant owns.",
+    "If someone who could see the passwords has left, treat those passwords as known and plan with the environment owner to replace the VM. Microsoft says development environments are considered disposable. Until then, limit Remote Desktop to approved addresses (see the item on remote access to LCS development VMs).",
+    "Check first: confirm with the environment owner that all code is checked in to version control, that nothing else on the VM is still needed, and that no other cloud-hosted environment uses its virtual network. Microsoft says you cannot delete an environment while other environments use its virtual network.",
+    "Then, in LCS under Cloud-hosted environments, deallocate and delete the old environment, and deploy a new one."
+   ],
+   "links": [
+    {
+     "title": "Deploy and access development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/access-instances"
+    },
+    {
+     "title": "Configure Lifecycle Services security",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/lifecycle-services/configure-lcs-security"
+    }
+   ],
+   "owner": "Dynamics 365 admins"
+  },
+  {
+   "key": "lcs-che-access",
+   "title": "Unverified remote access to LCS development VMs",
+   "why": "Cloud-hosted environments from Lifecycle Services (LCS, Microsoft's Finance and Operations project portal) run in your own Azure subscription. Microsoft says Remote Desktop (port 3389) and the environment's web page (HTTPS, port 443) are open to any address by default, so anyone on the internet can try to sign in. If nobody owns the IP allow-list (list of approved network addresses), entries pile up and never get removed.",
+   "steps": [
+    "For each cloud-hosted environment, open the Azure resource group that has the same name as the environment in LCS. Then open its network security group (the VM's firewall rules).",
+    "Write down how developers connect today: VPN (private link to the company network), an IP allow-list on the Remote Desktop rule (port 3389), or something else. Name the person who approves new addresses and where approvals are kept.",
+    "Check first: before you narrow a rule, collect the current public IP address of every developer, partner and system that connects, and agree on a test time. Leave the WinRM rule (port 5986) alone, even if a security scan says to close it: Microsoft says LCS uses it to set up and manage the VM and already limits it to LCS addresses. Keep outbound internet access open, because Microsoft says the apps need it.",
+    "Limit the Remote Desktop rule, and if you can the web (HTTPS, port 443) rule, to approved addresses only. Use Microsoft's allow-list rules for its own sandboxes as the model: no asterisk or zero entries, no wide ranges, no Azure datacenter ranges, and no public places such as coffee shops.",
+    "About Azure Bastion (an Azure service for Remote Desktop through the Azure portal, without opening the Remote Desktop port to the internet): Microsoft's FAQ says it has not tested or supported cloud-hosted environments with Bastion, although its one-box security page lists Bastion as an option to consider. If you try it, test on one VM first and keep another way in.",
+    "Review the allow-list with the approver every quarter. Remove entries for people and places that no longer need access, as Microsoft recommends."
+   ],
+   "links": [
+    {
+     "title": "Secure one-box development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/secure-developer-vm"
+    },
+    {
+     "title": "Cloud deployment overview",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/deployment/cloud-deployment-overview"
+    },
+    {
+     "title": "Deploy and access development environments",
+     "url": "https://learn.microsoft.com/en-us/dynamics365/fin-ops-core/dev-itpro/dev-tools/access-instances"
+    }
+   ],
+   "owner": "Azure team"
+  }
+ ]
+}

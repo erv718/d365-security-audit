@@ -30,6 +30,10 @@ function Get-HostLabel([string]$url) {
     return $null
 }
 
+# The evidence-file areas the sweeps write (dv-<env>-<area>.json, dvplus-<env>-<area>.json,
+# arm-<sub>-<area>.json). One list, used here and by share-diagnostics.ps1 to mask file names.
+$script:RedactDvAreas  = @('org', 'orginfo', 'entities', 'roles', 'solutions', 'fieldsec', 'users', 'org-settings', 'emailprofiles', 'queues', 'mailboxes', 'mailflow', 'fieldpermissions', 'ipfirewall')
+$script:RedactArmAreas = @('rbac', 'sql', 'synapse', 'keyvaults', 'nsgs', 'defender-pricings', 'loganalytics', 'sentinel', 'diagnostic-settings', 'logicapps', 'resources', 'storage', 'vms', 'nics', 'publicips', 'vnets', 'appservice', 'automation', 'apiconnections', 'roledefs')
 function New-RedactionMap([string]$OutDir) {
     $map = [ordered]@{}; $counts = @{}
     $add = {
@@ -45,8 +49,8 @@ function New-RedactionMap([string]$OutDir) {
         $map[$k] = "<$kind-$($counts[$kind])>"
     }
     $files = @(Get-ChildItem $OutDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
-    $dvAreas  = @('org', 'orginfo', 'entities', 'roles', 'solutions', 'fieldsec', 'users', 'org-settings', 'emailprofiles', 'queues', 'mailboxes', 'mailflow', 'fieldpermissions', 'ipfirewall')
-    $armAreas = @('rbac', 'sql', 'synapse', 'keyvaults', 'nsgs', 'defender-pricings', 'loganalytics', 'sentinel', 'diagnostic-settings', 'logicapps', 'resources', 'storage', 'vms', 'nics', 'publicips', 'vnets', 'appservice', 'automation', 'apiconnections')
+    $dvAreas  = $script:RedactDvAreas
+    $armAreas = $script:RedactArmAreas
     $dvRx  = "^(dv|dvplus)-(.+)-($(($dvAreas  | ForEach-Object { [regex]::Escape($_) }) -join '|'))(-ERROR)?\.json$"
     $armRx = "^arm-(.+)-($(($armAreas | ForEach-Object { [regex]::Escape($_) }) -join '|'))(-ERROR)?\.json$"
 
@@ -92,6 +96,15 @@ function New-RedactionMap([string]$OutDir) {
             if ($x.config) { foreach ($ir in @($x.config.ipSecurityRestrictions)) { if ($ir -and $ir.name) { & $add "$($ir.name)" 'res' } } }
             foreach ($c in @($x.connections)) { if ($c -and $c.name) { & $add "$($c.name)" 'res' } }
             foreach ($rb in @($x.runbooks)) { if ($rb -and $rb.name) { & $add "$($rb.name)" 'res' } }
+            if ($x.properties -and $x.properties.roleName -and "$($x.properties.type)" -eq 'CustomRole') { & $add "$($x.properties.roleName)" 'name' }
+            # Role-assignment scopes name resource groups, management groups and resources that may
+            # appear nowhere else (the network-writers finding quotes them).
+            if ($x.properties -and $x.properties.scope) {
+                $scp = "$($x.properties.scope)"
+                if ($scp -match '/resourceGroups/([^/]+)') { & $add $Matches[1] 'rg' }
+                if ($scp -match '/managementGroups/([^/]+)') { & $add $Matches[1] 'name' }
+                if ($scp -match '/resourceGroups/[^/]+/providers/') { & $add (($scp.TrimEnd('/') -split '/')[-1]) 'res' }
+            }
         }
     }
     # The organisation's own apps and the third-party apps it granted access to.
@@ -100,6 +113,11 @@ function New-RedactionMap([string]$OutDir) {
         if (-not $sp -or -not $sp.displayName) { continue }
         if ($script:MsTenantIds -contains "$($sp.appOwnerOrganizationId)".ToLower()) { continue }
         & $add "$($sp.displayName)" 'app'
+    }
+    # Owners of high-privilege apps (people's display names; their sign-in names are masked as emails).
+    foreach ($ao in @(Read-JsonQuiet (Join-Path $OutDir 'app-owners.json') | Where-Object { $_ })) {
+        if ($ao.displayName) { & $add "$($ao.displayName)" 'app' }
+        foreach ($o in @($ao.owners | Where-Object { $_ })) { if ($o.displayName) { & $add "$($o.displayName)" 'name' } }
     }
     # Dataverse: application users, custom roles, unmanaged solutions, profiles.
     foreach ($f in @($files | Where-Object { $_.Name -match '^dv-.+-users\.json$' })) {

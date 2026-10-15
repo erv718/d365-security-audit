@@ -125,7 +125,8 @@ $caMfa       = $caMfaPolicies.Count
 # a pilot group or a single app is counted but does not make the row Aligned (Test-CaPolicyCoversD365).
 $caMfaWide   = @($caMfaPolicies | Where-Object { Test-CaPolicyCoversD365 $_ }).Count
 $caMfaExcl   = @($caMfaPolicies | Where-Object { Test-CaPolicyHasExclusions $_ }).Count
-$caCompliant = Cnt ($ca | Where-Object { $_.state -eq 'enabled' -and ($_.grantControls.builtInControls -contains 'compliantDevice' -or $_.grantControls.builtInControls -contains 'domainJoinedDevice') })
+$caMfaOr     = @($caMfaPolicies | Where-Object { Test-CaPolicyMfaOrOther $_ }).Count
+$caCompliant = Cnt ($ca | Where-Object { $_.state -eq 'enabled' -and (Test-CaPolicyRequiresDevice $_) })   # MFA as an alternative does not count
 
 $pimElig   = LJ 'pim-eligible.json'
 $pimActive = LJ 'pim-active.json'
@@ -170,8 +171,8 @@ if ((Have $ppTenant) -and $ppTenant.powerPlatform -and $ppTenant.powerPlatform.g
     if ($gov.PSObject.Properties.Name -contains 'enableDefaultEnvironmentRouting') { $routing = [bool]$gov.enableDefaultEnvironmentRouting }
 }
 
-$sentinelFiles = @(LFiles 'arm-*-sentinel.json'); $sentinelReadN = 0; $sentinelOn = $false; $wsN = 0
-foreach ($f in $sentinelFiles) { $s = LJ $f.Name; if ($null -eq $s) { continue }; $sentinelReadN++; $wsN += Cnt $s; if ((Cnt ($s | Where-Object { $_.sentinelEnabled })) -gt 0) { $sentinelOn = $true } }
+$sentinelFiles = @(LFiles 'arm-*-sentinel.json'); $sentinelReadN = 0; $sentinelOn = $false; $wsN = 0; $wsErr = 0; $wsErrText = ''
+foreach ($f in $sentinelFiles) { $s = LJ $f.Name; if ($null -eq $s) { continue }; $sentinelReadN++; $wsN += Cnt $s; $wsE = @($s | Where-Object { $_ -and $_.error }); $wsErr += $wsE.Count; if ($wsE.Count -and -not $wsErrText) { $wsErrText = "$($wsE[0].error)" }; if ((Cnt ($s | Where-Object { $_.sentinelEnabled })) -gt 0) { $sentinelOn = $true } }
 $logicFiles = @(LFiles 'arm-*-logicapps.json'); $logicReadN = 0; $logicApps = 0
 foreach ($f in $logicFiles) { $x = LJ $f.Name; if ($null -eq $x) { continue }; $logicReadN++; $logicApps += Cnt $x }
 $emailFiles = @(LFiles 'dvplus-*-emailprofiles.json'); $emailReadN = 0; $emailProfiles = 0
@@ -243,8 +244,8 @@ foreach ($f in @(LFiles 'dv-*-users.json')) {
     $usersReadN++
     $envName = $f.BaseName -replace '^dv-' -replace '-users$'
     $saAll = @($u | Where-Object { $_ -and @($_.systemuserroles_association | Where-Object { $_ -and "$($_.name)" -eq 'System Administrator' }).Count -gt 0 })
-    # accessmode 3 = Support User and 5 = Delegated Admin (Microsoft's or a partner's support access,
-    # a platform placeholder that cannot get a scoped role): neither is one of the organisation's people.
+    # accessmode 3 = Support User (Microsoft support) and 5 = Delegated Admin (the built-in account a
+    # partner with delegated admin rights works through): neither is one of the organisation's people.
     $saDelegated += @($saAll | Where-Object { "$($_.accessmode)" -eq '5' }).Count
     $sa = @($saAll | Where-Object { "$($_.fullname)" -notin 'SYSTEM', 'INTEGRATION' -and "$($_.accessmode)" -notin '3', '5' })
     $pN = @($sa | Where-Object { -not $_.applicationid }).Count
@@ -261,7 +262,7 @@ foreach ($f in @(LFiles 'dv-*-users.json')) {
     }
 }
 $saNote = ''
-if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people$(if($saDelegated){" (plus $saDelegated delegated-admin account(s), Microsoft's or a partner's support access, not counted)"}), $saApps to $(if($appOwner.Count){'your organisation''s own application users'}else{'application users (Dynamics'' own platform accounts not filtered out: the service principal list was not read)'})$(if($saAppsNoOwner){", $saAppsNoOwner to application users whose app's owner could not be told (no service principal in this tenant, or one that records no owner)"})$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})$(if($saUnknown.Count){"; more than 3 people where the environment type was not read (a Gap if Production): $($saUnknown -join ', ')"})." }
+if ($usersReadN -gt 0) { $saNote = " Direct System Administrator assignments (roles inherited through teams not counted), summed over $usersReadN environment(s): $saPeople to people$(if($saDelegated){" (plus $saDelegated delegated-admin account(s), the built-in account a partner with delegated admin rights works through, not counted)"}), $saApps to $(if($appOwner.Count){'your organisation''s own application users'}else{'application users (Dynamics'' own platform accounts not filtered out: the service principal list was not read)'})$(if($saAppsNoOwner){", $saAppsNoOwner to application users whose app's owner could not be told (no service principal in this tenant, or one that records no owner)"})$(if($saBusy.Count){"; more than 3 people in Production: $($saBusy -join ', ')"})$(if($saReview.Count){"; more than 3 people in non-production, to review: $($saReview -join ', ')"})$(if($saUnknown.Count){"; more than 3 people where the environment type was not read (a Gap if Production): $($saUnknown -join ', ')"})." }
 else {
     $uErr = @(LFiles 'dv-*-users-ERROR.json')
     if ($uErr.Count) { $saNote = " System Administrator holders not read.$(ErrNote (ErrInfo ($uErr[0].Name -replace '-ERROR\.json$', '.json'))) Give the app user Read (Organization) on User and Security Role." }
@@ -446,7 +447,7 @@ elseif ($caMfa -eq 0 -and $sdOn) { $s14 = 'Partial'; $e14 = "Security defaults a
 elseif ($caTotal -eq 0) { $s14 = 'Gap'; $e14 = "No Conditional Access policies exist$(if(Have $secDef){' and security defaults are off'}else{' (security defaults not read)'})." }
 elseif ($caMfa -eq 0) { $s14 = 'Gap'; $e14 = "$caTotal policies, $caOn enabled, none enforce MFA." }
 elseif ($caMfaWide -eq 0) { $s14 = 'Partial'; $e14 = "$caTotal policies, $caOn enabled, $caMfa enforce MFA, but none of those targets all users on all apps (or the Dynamics apps): a pilot group or a single app is covered, D365 users as a whole are not. Review who and what each MFA policy includes." }
-else { $s14 = 'Aligned'; $e14 = "$caTotal policies, $caOn enabled, $caMfa enforce MFA, $caMfaWide of them for all users on all apps (or the Dynamics apps)$(if($caMfaExcl){"; $caMfaExcl of the MFA policies exclude users, groups or roles, to review"})." }
+else { $s14 = 'Aligned'; $e14 = "$caTotal policies, $caOn enabled, $caMfa enforce MFA, $caMfaWide of them for all users on all apps (or the Dynamics apps)$(if($caMfaExcl){"; $caMfaExcl of the MFA policies exclude users, groups, roles or apps, to review"})$(if($caMfaOr){"; $caMfaOr also accept another control, such as a compliant device, instead of MFA"})." }
 if ((Have $secDef) -and -not ($caMfa -eq 0 -and $sdOn)) { $e14 += " Security defaults: $(if($sdOn){'ON'}else{'off'})." }
 if (Have $amp) { $e14 += " SMS/voice sign-in enabled in the Authentication methods policy: $(if($weakOn.Count){$weakOn -join ', '}else{'no'})$(if("$($amp.policyMigrationState)" -ne 'migrationComplete'){' (legacy MFA/SSPR settings not migrated, so they may still allow SMS/voice; not read)'})." }
 if (Have $namedLoc) { $e14 += " $(Cnt $namedLoc) named location(s)." }
@@ -551,11 +552,13 @@ if ($envN -gt 0) {
 Chk '4.2' '4 Auditing' 'Events / user activity logged' $(if($envN -eq 0){'Not checked'}elseif($auditOn -eq 0){'Gap'}else{'Partial'}) $e42 'dataverse'
 if ($sentinelReadN -eq 0) { $s43 = 'Not checked'; $e43 = 'Azure Log Analytics/Sentinel not read (needs Reader on the subscriptions).' }
 elseif ($sentinelOn) { $s43 = 'Partial'; $e43 = "Sentinel enabled on at least one of $wsN Log Analytics workspace(s); whether Power Platform/Dataverse logs are ingested is not verified." }
-else { $s43 = 'Gap'; $e43 = "No Sentinel onboarding on $wsN Log Analytics workspace(s) across $($sentinelReadN) subscription(s)." }
+elseif ($wsN -gt 0 -and $wsErr -eq $wsN) { $s43 = 'Not checked'; $e43 = "Sentinel state could not be read on any of the $wsN Log Analytics workspace(s) (first error: $wsErrText)." }
+else { $s43 = 'Gap'; $e43 = "No Sentinel onboarding on $wsN Log Analytics workspace(s) across $($sentinelReadN) subscription(s)$(if($wsErr){"; $wsErr workspace(s) could not be read"})." }
 Chk '4.3' '4 Auditing' 'SIEM / monitoring over Power Platform' $s43 ($e43 + $logNote) 'azure'
 # Not checked only when no Sentinel file was read; read-and-off is the same Gap 4.3 reports. The
 # Purview half has no API and stays a manual confirmation in every branch.
 if ($sentinelReadN -eq 0) { $s44 = 'Not checked'; $e44 = 'Azure Log Analytics/Sentinel not read (needs Reader on the subscriptions); Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit.' }
+elseif (-not $sentinelOn -and $wsN -gt 0 -and $wsErr -eq $wsN) { $s44 = 'Not checked'; $e44 = "Sentinel state could not be read (see 4.3); Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit." }
 elseif ($sentinelOn) { $s44 = 'Partial'; $e44 = 'Sentinel onboarded (see 4.3); whether Dataverse or Power Platform logs reach it, and the Purview audit, to confirm manually: purview.microsoft.com > Solutions > Audit.' }
 else { $s44 = 'Gap'; $e44 = "Sentinel read: $(if($wsN -eq 0){"no Log Analytics workspace exists in the $sentinelReadN subscription(s) read, so nothing is onboarded"}else{"not onboarded on any of $wsN Log Analytics workspace(s) in $sentinelReadN subscription(s)"}) (see 4.3). Purview audit to confirm manually: purview.microsoft.com > Solutions > Audit." }
 Chk '4.4' '4 Auditing' 'Purview / Sentinel integration' $s44 $e44 'azure'
@@ -592,7 +595,7 @@ else {
     $e61 = "Integrations inventoried: $($parts61 -join ', '). Per-integration authentication to review; the findings name each exposed one."
 }
 Chk '6.1' '6 Integration' 'External integration security' $s61 $e61 'azure'
-Chk '6.2' '6 Integration' 'API keys / credentials / tokens' $(if(-not (Have $apps)){'Not checked'}elseif($expiredSecrets -gt 0){'Gap'}else{'Partial'}) $(if(-not (Have $apps)){'App credentials not read (needs Application.Read.All with admin consent).'}else{"$expiredSecrets expired app credential(s) still present across $(Cnt $apps) app registrations; secret rotation/vaulting practice to confirm."})
+Chk '6.2' '6 Integration' 'API keys / credentials / tokens' $(if(-not (Have $apps)){'Not checked'}else{'Partial'}) $(if(-not (Have $apps)){'App credentials not read (needs Application.Read.All with admin consent).'}else{"$expiredSecrets expired app credential(s) still attached across $(Cnt $apps) app registrations (they can no longer sign in: cleanup, not exposure); how secrets are rotated and stored is the practice to confirm."})
 
 # Domain 7 - Incident response
 Chk '7.1' '7 Incident response' 'Incident response plan' 'MANUAL' 'A document/process - no API can confirm it exists. Collect: the written IR plan, named owners for Entra / Power Platform / Azure incidents, and the last exercise date. Check alerts are being worked: Microsoft Defender portal (security.microsoft.com) > Incidents & alerts.'
@@ -716,66 +719,8 @@ $mdPath = Join-Path $out 'assessment-report.md'
 $md -join "`n" | Out-File -Encoding utf8 $mdPath
 Save-Json $checks 'assessment-report.json' | Out-Null
 
-# The same report as a self-contained HTML page (open it in a browser, print it to PDF for a
-# meeting). Built from the Markdown lines above, which this script writes itself, so only the
-# shapes used here are converted: headings, tables, bullets, paragraphs, **bold** and `code`.
-function ConvertTo-ReportHtml($lines) {
-    function Esc([string]$s) { return $s.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;') }
-    function Inline([string]$s) {
-        $s = Esc $s
-        $s = [regex]::Replace($s, '\*\*(.+?)\*\*', '<strong>$1</strong>')
-        $s = [regex]::Replace($s, '`([^`]+)`', '<code>$1</code>')
-        return $s
-    }
-    $tag = @{ 'Gap' = 'gap'; 'Partial' = 'partial'; 'Aligned' = 'aligned'; 'Not checked' = 'notchecked'; 'MANUAL' = 'manual'; 'Not in use' = 'notinuse'; 'HIGH' = 'gap'; 'MEDIUM' = 'partial'; 'LOW' = 'notchecked' }
-    $h = New-Object System.Collections.ArrayList
-    $inTable = $false; $inList = $false; $para = New-Object System.Collections.ArrayList   # a list, so the flush block below can empty it in place
-    $flush = {
-        if ($para.Count) { [void]$h.Add("<p>$((@($para | ForEach-Object { Inline $_ }) -join ' '))</p>"); $para.Clear() }
-    }
-    foreach ($raw in $lines) {
-        $line = "$raw"
-        if ($line -match '^\|') {
-            if ($inList) { [void]$h.Add('</ul>'); $inList = $false }
-            & $flush
-            if ($line -match '^\|\s*-{2,}') { continue }   # the Markdown separator row
-            $cells = @($line.Trim().TrimStart('|').TrimEnd('|') -split '\|' | ForEach-Object { $_.Trim() })
-            if (-not $inTable) { [void]$h.Add('<table>'); [void]$h.Add('<tr>' + (($cells | ForEach-Object { "<th>$(Inline $_)</th>" }) -join '') + '</tr>'); $inTable = $true; continue }
-            $tds = foreach ($c in $cells) {
-                $plain = $c -replace '\*\*', ''
-                if ($tag.ContainsKey($plain)) { "<td><span class=`"chip $($tag[$plain])`">$(Esc $plain)</span></td>" } else { "<td>$(Inline $c)</td>" }
-            }
-            [void]$h.Add('<tr>' + ($tds -join '') + '</tr>')
-            continue
-        }
-        if ($inTable) { [void]$h.Add('</table>'); $inTable = $false }
-        if ($line -match '^(#{1,3}) (.*)$') { if ($inList) { [void]$h.Add('</ul>'); $inList = $false }; & $flush; $lvl = $Matches[1].Length; [void]$h.Add("<h$lvl>$(Inline $Matches[2])</h$lvl>"); continue }
-        if ($line -match '^- (.*)$') { & $flush; if (-not $inList) { [void]$h.Add('<ul>'); $inList = $true }; [void]$h.Add("<li>$(Inline $Matches[1])</li>"); continue }
-        if ($inList) { [void]$h.Add('</ul>'); $inList = $false }
-        if ($line.Trim() -eq '') { & $flush; continue }
-        if ($line -match '^_(.*)_$') { & $flush; [void]$h.Add("<p><em>$(Inline $Matches[1])</em></p>"); continue }
-        [void]$para.Add($line)
-    }
-    if ($inList) { [void]$h.Add('</ul>') }
-    if ($inTable) { [void]$h.Add('</table>') }
-    & $flush
-    $css = @'
-body{font-family:Segoe UI,Arial,sans-serif;font-size:14px;line-height:1.45;color:#1b1b1b;background:#fff;margin:32px auto;max-width:1200px;padding:0 24px}
-h1{font-size:24px;margin:0 0 8px}h2{font-size:19px;margin:28px 0 8px;border-bottom:1px solid #d8d8d8;padding-bottom:4px}h3{font-size:16px;margin:20px 0 6px}
-table{border-collapse:collapse;width:100%;margin:8px 0 16px;font-size:13px}th,td{border:1px solid #d8d8d8;padding:6px 8px;vertical-align:top;text-align:left}th{background:#f2f2f2}
-tr:nth-child(even) td{background:#fafafa}code{font-family:Consolas,monospace;font-size:12px;background:#f2f2f2;padding:1px 4px;border-radius:3px}
-.chip{display:inline-block;padding:2px 8px;border-radius:10px;font-weight:600;font-size:12px;white-space:nowrap}
-.gap{background:#fde7e9;color:#a4262c}.partial{background:#fff4ce;color:#8a6d00}.aligned{background:#dff6dd;color:#107c10}.notchecked{background:#eee;color:#555}.manual{background:#e5f0ff;color:#1b4f9c}.notinuse{background:#eee;color:#555}
-@media print{body{margin:0;max-width:none}h2{page-break-after:avoid}tr{page-break-inside:avoid}}
-'@
-    return "<!doctype html>`n<html lang=`"en`"><head><meta charset=`"utf-8`"><meta name=`"viewport`" content=`"width=device-width, initial-scale=1`"><title>D365 / Power Platform Security Assessment</title><style>$css</style></head><body>`n$($h -join "`n")`n<p><small>Generated by d365-security-audit on $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')) UTC. This file holds your tenant's configuration; keep it with the rest of output/.</small></p>`n</body></html>"
-}
-$htmlPath = Join-Path $out 'assessment-report.html'
-try { ConvertTo-ReportHtml $md | Out-File -Encoding utf8 $htmlPath } catch {
-    Write-Warning "assessment: the HTML version could not be written ($($_.Exception.Message)); the Markdown report is complete."
-    Remove-Item -LiteralPath $htmlPath -ErrorAction SilentlyContinue   # never leave an older run's page next to this run's report
-    $htmlPath = $null
-}
+# The readable report (security-assessment.html) is written by security-report.ps1 from this
+# script's assessment-report.json and analyze.ps1's findings.
 # The banner also goes into scope-effective.json so run-audit.ps1 can repeat it at the very end.
 Update-ScopeEffective { param($x) Set-ScopeField $x 'banner' $banner } | Out-Null
 
@@ -785,5 +730,4 @@ $checks | Sort-Object { $order[$_.Status] }, No | Format-Table No, Domain, Statu
 Write-Host ("Tally (28 unique): " + ($tally -join '  |  ')) -ForegroundColor Yellow
 Write-Host $banner -ForegroundColor Yellow
 Write-Host ("Report: {0}" -f $mdPath) -ForegroundColor Green
-if ($htmlPath) { Write-Host ("Same report as a page: {0}  (open in a browser; print to PDF for a meeting)" -f $htmlPath) -ForegroundColor Green }
 Write-Host "This maps Microsoft's assessment structure to your live config, plus the extra findings from analyze.ps1." -ForegroundColor Green

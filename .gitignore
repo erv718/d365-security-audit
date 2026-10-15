@@ -10,6 +10,8 @@ output/
 !package.json
 # the scope template (placeholders only); your real scope.json stays ignored
 !scope.example.json
+# the fixed explanations, fix steps and Microsoft links the people report prints (no tenant data)
+!scripts/finding-catalog.json
 
 # OS / editor
 .DS_Store

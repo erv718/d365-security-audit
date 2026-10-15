@@ -48,8 +48,8 @@ Copy-Item .env.example .env    # then fill it in (see Authentication below)
 ```
 
 Output lands in `./output` (git-ignored): `*.json` raw evidence, `FINDINGS-summary.json`
-(also printed to the console), `assessment-report.md`, the same as a page in
-`assessment-report.html`, and `assessment-report.json`. Run a
+(also printed to the console), `assessment-report.md` and `.json`, and
+`security-assessment.html` (the report for people). Run a
 single area with `-SkipGraph`, `-SkipDataverse`, `-SkipAzure`, or `-SkipPowerPlatform`.
 `-Log` keeps everything printed in `output/run-log.txt` (the setup check, every warning, one
 Timing line with the seconds each step took); `-Inventory <export.csv>` cross-checks a portal
@@ -132,8 +132,19 @@ instructions. Point the user at that checklist first when something fails.
 
 ## Reading the output
 
-- `assessment-report.md` (and `.json`; `.html` is the same report as a page for a browser or a
-  PDF print): the pulls mapped to Microsoft's Power Platform and
+- `security-assessment.html`: the report for people (summary, fix-first list, one card per
+  kind of issue with why it matters, the fix steps and Microsoft links, the 29 checks, manual
+  checks). It is built from the two files below and `scripts/finding-catalog.json`; read those
+  instead of the HTML.
+- Every finding in `FINDINGS-summary.json` carries a `Key`. Its entry in
+  `scripts/finding-catalog.json` holds the plain-language explanation, the fix steps and the
+  Microsoft Learn links the report prints: use them when you advise, rather than inventing
+  steps or links. Allow-list findings also carry a `Kind` (the resource type).
+- `app-owners.json` (owners of the apps that hold high-privilege permissions, both the app
+  registration's and the enterprise app's) and `arm-<sub>-roledefs.json` (the definition of every
+  role assigned in the subscription) record a failure per item in an `error` field; the findings
+  say how many were not read.
+- `assessment-report.md` (and `.json`): the pulls mapped to Microsoft's Power Platform and
   Dynamics 365 Security Review, 8 domains and 29 checks. 28 are unique: 2.5 is a duplicate of
   2.4 in Microsoft's template, so it mirrors 2.4 and is left out of the tally.
   - Every verdict is tied to an evidence file in `output/`. If that file is missing, the check
@@ -185,7 +196,9 @@ For each item you recommend, give the user four things:
 - **What** it is, in one plain sentence.
 - **Why** it matters (what an attacker, or an auditor, would do with it).
 - **The fix**, concretely: the exact Microsoft setting or admin-center path, with a doc link
-  when it helps. The report's evidence column already carries the path for many checks.
+  when it helps. The finding's catalog entry (`scripts/finding-catalog.json`, by its `Key`)
+  has checked steps and Microsoft links; the report's evidence column carries the path for
+  many checks.
 - **Effort**: a quick config change, or a real project. Say which.
 
 Then stop and offer to go deeper on any one. Do not walk them through all 29 checks at once.
@@ -473,14 +486,14 @@ table. The flow, and a prompt for an AI session on the same machine, are in
   output, and `Get-ErrorText` (captures the service's error body for the `*-ERROR.json` files).
 - `scripts/check-setup.ps1` - preflight doctor: probes every permission, prints the fix for gaps.
 - `scripts/graph-sweep.ps1`, `scripts/graph-identity-plus.ps1` - Entra ID identity plane
-  (apps, service principals, roles, Conditional Access, sign-ins; auth methods, security
-  defaults, PIM, Intune, named locations, guests by domain).
+  (apps, service principals, the owners of high-privilege apps, roles, Conditional Access,
+  sign-ins; auth methods, security defaults, PIM, Intune, named locations, guests by domain).
 - `scripts/powerplatform-sweep.ps1` - Power Platform admin (environments with security group
   and Managed Environment state, DLP policies, tenant settings).
 - `scripts/dataverse-sweep.ps1`, `scripts/dataverse-plus.ps1` - per-environment Dataverse
   config (auditing, roles, solutions, field security; org settings, email profiles, mailboxes,
   queues, field permissions).
-- `scripts/azure-sweep.ps1`, `scripts/azure-plus.ps1` - Azure ARM (RBAC, SQL, Synapse, Key
+- `scripts/azure-sweep.ps1`, `scripts/azure-plus.ps1` - Azure ARM (RBAC and the definitions of the roles assigned, SQL, Synapse, Key
   Vault, NSGs; Defender plans, Log Analytics and Sentinel, diagnostic settings, Logic Apps with
   their triggers and allowed callers).
 - `scripts/azure-exposure.ps1` - the resource inventory (`arm-*-resources.json`), storage
@@ -493,6 +506,10 @@ table. The flow, and a prompt for an AI session on the same machine, are in
   last run with every identifier masked, for sharing outside the machine (local files only).
 - `scripts/analyze.ps1`, `scripts/assessment-report.ps1` - build the ranked findings and the
   29-check report from `./output`. Local processing only, no network calls.
+- `scripts/security-report.ps1` - writes `output/security-assessment.html`, the report for
+  people, from those two and `scripts/finding-catalog.json`. Local files only; the page loads
+  nothing from the internet. [docs/assessment-review.md](docs/assessment-review.md) has a
+  prompt for reviewing a run with an AI assistant on the same machine.
 - `scripts/ai-analysis.ps1` - optional mitigation analysis, OFF by default (`AI_ANALYSIS` in
   `.env`). `local` writes a prompt bundle to `output/` (no network); `api` sends the scoped
   summary to a user-configured OpenAI-compatible endpoint (the tool's only opt-in egress).

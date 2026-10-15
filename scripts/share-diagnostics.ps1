@@ -22,8 +22,8 @@ $out = Get-OutDir
 $rmap = New-RedactionMap $out
 
 # --- Redaction -------------------------------------------------------------------------
-$dvAreas  = @('org', 'orginfo', 'entities', 'roles', 'solutions', 'fieldsec', 'users', 'org-settings', 'emailprofiles', 'queues', 'mailboxes', 'mailflow', 'fieldpermissions', 'ipfirewall')
-$armAreas = @('rbac', 'sql', 'synapse', 'keyvaults', 'nsgs', 'defender-pricings', 'loganalytics', 'sentinel', 'diagnostic-settings', 'logicapps', 'resources', 'storage', 'vms', 'nics', 'publicips', 'vnets', 'appservice', 'automation', 'apiconnections')
+$dvAreas  = $script:RedactDvAreas    # one list, in _redact.ps1
+$armAreas = $script:RedactArmAreas
 $dvRx  = "^(dv|dvplus)-(.+)-($(($dvAreas  | ForEach-Object { [regex]::Escape($_) }) -join '|'))(-ERROR)?\.json$"
 $armRx = "^arm-(.+)-($(($armAreas | ForEach-Object { [regex]::Escape($_) }) -join '|'))(-ERROR)?\.json$"
 function Get-Placeholder([string]$name, [string]$fallback) { $k = "$name".Trim().ToLower(); if ($k -and $rmap.Contains($k)) { return $rmap[$k] }; return $fallback }
@@ -52,33 +52,12 @@ function Protect-FileName([string]$n) {
     if ($n -match $dvRx) { return "$($Matches[1])-$(Get-Placeholder $Matches[2] '<env>')-$($Matches[3])$($Matches[4]).json" }
     if ($n -match '^(dv|dvplus)-(.+)-ERROR\.json$') { return "$($Matches[1])-$(Get-Placeholder $Matches[2] '<env>')-ERROR.json" }
     if ($n -match $armRx) { return "arm-$(Get-Placeholder $Matches[1] '<sub>')-$($Matches[2])$($Matches[3]).json" }
-    return $n
+    # A file this version does not know (left by another version): never print its name as is.
+    if ($n -match '^(arm|dv|dvplus)-.+?(-ERROR)?\.json$') { return "$($Matches[1])-<unrecognized file>$($Matches[2]).json" }
+    return (Protect-Names $n $rmap)
 }
 
 # --- Tool version from .git (no git executable needed) --------------------------------------
-function Get-ToolVersion {
-    $g = Join-Path $repo '.git'
-    if (-not (Test-Path (Join-Path $g 'HEAD'))) { return 'unknown (no .git folder; download or clone the latest release)' }
-    try {
-        $head = (Get-Content (Join-Path $g 'HEAD') -Raw).Trim()
-        $sha = $head
-        if ($head -match '^ref:\s*(.+)$') {
-            $ref = $Matches[1]
-            $refPath = Join-Path $g ($ref -replace '/', [IO.Path]::DirectorySeparatorChar)
-            if (Test-Path $refPath) { $sha = (Get-Content $refPath -Raw).Trim() }
-            else {
-                $packed = Join-Path $g 'packed-refs'
-                if (Test-Path $packed) { foreach ($l in Get-Content $packed) { if ($l -match "^([0-9a-f]{40}) $([regex]::Escape($ref))$") { $sha = $Matches[1]; break } } }
-            }
-        }
-        $tags = @()
-        $tagDir = Join-Path $g 'refs/tags'
-        if (Test-Path $tagDir) { foreach ($tf in Get-ChildItem $tagDir -File) { if ((Get-Content $tf.FullName -Raw).Trim() -eq $sha) { $tags += $tf.Name } } }
-        $packed = Join-Path $g 'packed-refs'
-        if (Test-Path $packed) { foreach ($l in Get-Content $packed) { if ($l -match "^$sha refs/tags/(.+)$") { $tags += $Matches[1] } } }
-        return "$($sha.Substring(0, [Math]::Min(8, $sha.Length)))$(if($tags.Count){" ($(($tags | Select-Object -Unique) -join ', '))"})"
-    } catch { return 'unknown' }
-}
 
 # --- Scope and run start ---------------------------------------------------------------------
 $scopeObj = Read-JsonQuiet (Join-Path $out 'scope-effective.json')
@@ -148,6 +127,8 @@ foreach ($f in $files) {
         else {
             $j = $rawTxt | ConvertFrom-Json
             if ($null -eq $j) { $count = 0 } elseif ($j -is [array]) { $count = $j.Count } elseif ($j.PSObject.Properties.Name -contains 'value') { $count = @($j.value).Count } else { $count = 'object' }
+            # Files that record a failure per item (owners per app, role definitions): count those.
+            if ($j -is [array]) { $itemErr = @($j | Where-Object { $_ -and $_.PSObject.Properties.Name -contains 'error' -and $_.error }).Count; if ($itemErr) { $state = "ok, $itemErr item(s) not read" } }
         }
     } catch { $state = 'not valid JSON' }
     if ($stale) { $state += ' (earlier run)' }

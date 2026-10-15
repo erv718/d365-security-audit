@@ -29,9 +29,9 @@ an Azure **Reader** role, and a Dataverse **security role** as an application us
 
 | Application permission | Why |
 |---|---|
-| `Application.Read.All` | App registrations, service principals, credential expiry, app permissions |
+| `Application.Read.All` | App registrations, service principals, credential expiry, app permissions, and the owners of the apps that hold high-privilege permissions |
 | `RoleManagement.Read.Directory` | Directory roles + members, PIM eligible/active assignments |
-| `User.Read.All` | Guest counts, the names behind role members, per-user sign-in activity (dormant accounts) |
+| `User.Read.All` | Guest counts, the names behind role members and app owners, per-user sign-in activity (dormant accounts) |
 | `Policy.Read.All` | Conditional Access, named locations, auth methods policy, security defaults |
 | `AuditLog.Read.All` | Sign-in sample and per-user last sign-in for dormant-account detection (needs Entra ID P1) |
 | `DeviceManagementConfiguration.Read.All` | Intune device compliance policies |
@@ -66,7 +66,7 @@ page, on each such row, **...** > **Revoke admin consent**, then **...** > **Rem
 
 The app needs the **Reader** role on each subscription you want audited. Reader covers every
 Azure read the audit makes: role assignments, SQL and Synapse firewalls, Key Vaults, NSGs, VMs
-and their network interfaces and public IPs, storage accounts, App Service and Function Apps
+and their network interfaces and public IPs, the definitions of the roles assigned, storage accounts, App Service and Function Apps
 (web config and function list), Logic Apps, Automation accounts, API connections and the
 resource inventory. It never asks for keys, app settings or connection secrets, which Reader
 cannot read anyway.

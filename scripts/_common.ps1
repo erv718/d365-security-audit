@@ -191,7 +191,7 @@ function Get-ScopeFilePath {
 function New-ScopeObject {
     return [ordered]@{
         version = 1
-        resolvedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        resolvedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [cultureinfo]::InvariantCulture)   # parsed back as invariant (Get-StaleEvidence)
         source = 'none'; sources = @(); scopeFile = $null; scopeFileHash = $null; strict = $false; partial = $false
         azure = [ordered]@{
             subscriptions = @(); resourceGroups = @(); types = @(); resources = [ordered]@{}; unknownTypes = @()
@@ -270,8 +270,8 @@ function Get-ScopeEffectivePath { return (Join-Path (Get-OutDir) 'scope-effectiv
 # The scope resolved for this run (written by check-setup.ps1), or a fresh resolution when a script runs alone.
 function Read-ScopeEffective {
     $p = Get-ScopeEffectivePath
-    if (Test-Path $p) {
-        try { $o = Get-Content $p -Raw | ConvertFrom-Json; if ($o -and $o.version) { return $o } }
+    if (Test-Path -LiteralPath $p) {
+        try { $o = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; if ($o -and $o.version) { return $o } }
         catch { Write-Warning "scope-effective.json could not be read; resolving the scope again ($($_.Exception.Message))" }
     }
     return (Get-ScopeObject)
@@ -617,6 +617,125 @@ function Get-IpBreadth($Range, [switch]$IgnorePrivate) {
     return $null
 }
 
+# Private, loopback, link-local and carrier-grade NAT space, and the 0.0.0.0 "allow Azure services"
+# marker: none of them is a public address somebody connects from.
+function Test-IpRangeInternal($Range) {
+    if ($null -eq $Range -or @($Range).Count -ne 2) { return $false }
+    if ($Range[0] -eq 0 -and $Range[1] -eq 0) { return $true }
+    foreach ($pr in @(@(167772160, 184549375), @(2886729728, 2887778303), @(3232235520, 3232301055), @(1681915904, 1686110207), @(2130706432, 2147483647), @(2851995648, 2852061183))) {
+        if ($Range[0] -ge $pr[0] -and $Range[1] -le $pr[1]) { return $true }
+    }
+    return $false
+}
+# The organisation's documented office and VPN ranges: the IPv4 ranges of its Conditional Access IP
+# named locations (ca-named-locations.json). $null when that file was not read; an empty list when
+# it was read and holds no IP range. Each item is @(start, end, location name). Assign the result
+# directly (no @( ) around the call): the leading comma keeps a one-range list a list.
+function Get-NamedIpRanges([string]$OutDir) {
+    $p = Join-Path $OutDir 'ca-named-locations.json'
+    if (-not (Test-Path $p)) { return $null }
+    $x = $null
+    try { $raw = Get-Content $p -Raw; if ([string]::IsNullOrWhiteSpace($raw)) { return $null }; $x = $raw | ConvertFrom-Json } catch { return $null }
+    $ranges = @()
+    foreach ($loc in @($x)) {
+        if (-not $loc) { continue }
+        foreach ($ir in @($loc.ipRanges | Where-Object { $_ })) {
+            $rg = Get-IpRange "$($ir.cidrAddress)"
+            if ($null -ne $rg) { $ranges += , @($rg[0], $rg[1], "$($loc.displayName)", "$($loc.id)") }
+        }
+    }
+    return , $ranges
+}
+# Microsoft Dynamics Lifecycle Services (LCS) management addresses. LCS reaches a cloud-hosted
+# development VM on WinRM 5986 from these, so a rule that allows them is there by design. Copied
+# from the table "Lifecycle Services regional instances and IPs" on Microsoft's page "Secure
+# one-box development environments" (learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/
+# dev-tools/secure-developer-vm); update this list when that table changes.
+$script:LcsManagementIps = @('104.42.56.231', '20.125.130.131', '20.9.194.46', '4.255.162.39', '4.150.11.25', '13.89.189.103',
+    '52.227.70.23', '51.54.161.13', '52.245.167.30', '20.141.241.11', '52.181.207.10', '52.180.251.93', '52.130.253.37', '52.131.87.112',
+    '13.95.29.73', '20.223.210.22', '52.136.133.233', '20.199.103.168', '102.133.105.52', '20.87.209.137', '51.107.230.199', '20.199.186.150',
+    '51.13.150.248', '20.100.201.172', '20.74.250.171')
+# Every address the organisation or Microsoft documents: the Conditional Access IP named locations
+# ("named location 'X'") except those a policy uses to block sign-ins (a list of attacker addresses
+# is not an office), the organisation's own Azure public IPs, and the LCS management addresses.
+# $BlockedIds: named-location ids to leave out; $OwnIps: @{ ip; name } items. Same shape as
+# Get-NamedIpRanges; assign the result directly.
+function Get-KnownIpRanges($NamedRanges, $BlockedIds, $OwnIps) {
+    $known = @()
+    if ($null -ne $NamedRanges) {
+        foreach ($kr in $NamedRanges) {
+            if ($null -eq $kr) { continue }
+            if ($BlockedIds -and $BlockedIds.ContainsKey("$($kr[3])")) { continue }
+            $known += , @($kr[0], $kr[1], "named location '$($kr[2])'")
+        }
+    }
+    foreach ($o in @($OwnIps | Where-Object { $_ })) { $r = Get-IpRange "$($o.ip)"; if ($null -ne $r) { $known += , @($r[0], $r[1], "your own Azure public IP '$($o.name)'") } }
+    foreach ($ip in $script:LcsManagementIps) { $r = Get-IpRange $ip; if ($null -ne $r) { $known += , @($r[0], $r[1], 'Microsoft Lifecycle Services management address, there by design') } }
+    return , $known
+}
+# The name of the named location that holds the whole range, or $null.
+function Get-KnownLocationName($Range, $NamedRanges) {
+    if ($null -eq $Range -or $null -eq $NamedRanges) { return $null }
+    foreach ($kr in $NamedRanges) { if ($Range[0] -ge $kr[0] -and $Range[1] -le $kr[1]) { return "$($kr[2])" } }
+    return $null
+}
+
+# App permissions that let an app read or change data across the whole tenant (Microsoft Graph) or
+# every mailbox (Exchange Online). analyze.ps1 reports the apps that hold them; graph-sweep.ps1
+# reads those apps' owners, who can add a secret and act as the app.
+$script:RiskyAppRoles = @('Mail.Read', 'Mail.ReadWrite', 'Mail.Send', 'Directory.ReadWrite.All', 'Application.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'User.ReadWrite.All',
+    'Files.ReadWrite.All', 'Sites.FullControl.All', 'full_access_as_app', 'Exchange.ManageAsApp', 'AppRoleAssignment.ReadWrite.All', 'RoleAssignmentSchedule.ReadWrite.Directory',
+    'RoleEligibilitySchedule.ReadWrite.Directory', 'UserAuthenticationMethod.ReadWrite.All', 'Policy.ReadWrite.ConditionalAccess', 'Domain.ReadWrite.All')
+
+# Azure roles that can change network rules (open a port, add an IP address), by role definition
+# id, and the roles that can grant themselves one of those. Custom roles are checked by action.
+$script:NetworkWriteRoles = @{ '8e3af657-a8ff-443c-a75c-2fe8c4bcb635' = 'Owner'; 'b24988ac-6180-42a0-ab88-20f7382dd24c' = 'Contributor'; '4d97b98b-1d4f-4787-a291-c67834d212e7' = 'Network Contributor' }
+$script:RoleGrantRoles = @{ '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9' = 'User Access Administrator'; 'f58310d9-a9f6-439a-9e8d-f62e7b41a168' = 'Role Based Access Control Administrator' }
+function Test-RoleGrantsNetworkWrite($RoleDef) {
+    if ($null -eq $RoleDef -or $null -eq $RoleDef.properties) { return $false }
+    foreach ($target in 'Microsoft.Network/networkSecurityGroups/write', 'Microsoft.Network/networkSecurityGroups/securityRules/write') {
+        foreach ($perm in @($RoleDef.properties.permissions | Where-Object { $_ })) {
+            $allowed = @($perm.actions | Where-Object { $_ -and $target -like "$_" }).Count -gt 0
+            $denied  = @($perm.notActions | Where-Object { $_ -and $target -like "$_" }).Count -gt 0
+            if ($allowed -and -not $denied) { return $true }
+        }
+    }
+    return $false
+}
+
+# The tool's version: the release tag from git when git is installed (for example v1.6.0, or
+# v1.6.0-2-g1a2b3c4 between releases), else the commit read from .git directly.
+function Get-ToolVersion([string]$RepoRoot) {
+    if (-not $RepoRoot) { $RepoRoot = Split-Path $PSScriptRoot -Parent }
+    try {
+        if ((Test-Path (Join-Path $RepoRoot '.git')) -and (Get-Command git -ErrorAction SilentlyContinue)) {   # this folder's own clone, never an outer repository
+            $d = & git -C $RepoRoot describe --tags --always 2>$null
+            if ($LASTEXITCODE -eq 0 -and "$d".Trim()) { return "$d".Trim() }
+        }
+    } catch {}
+    $g = Join-Path $RepoRoot '.git'
+    if (-not (Test-Path (Join-Path $g 'HEAD'))) { return 'unknown (no .git folder; download or clone the latest release)' }
+    try {
+        $head = (Get-Content (Join-Path $g 'HEAD') -Raw).Trim()
+        $sha = $head
+        if ($head -match '^ref:\s*(.+)$') {
+            $ref = $Matches[1]
+            $refPath = Join-Path $g ($ref -replace '/', [IO.Path]::DirectorySeparatorChar)
+            if (Test-Path $refPath) { $sha = (Get-Content $refPath -Raw).Trim() }
+            else {
+                $packed = Join-Path $g 'packed-refs'
+                if (Test-Path $packed) { foreach ($l in Get-Content $packed) { if ($l -match "^([0-9a-f]{40}) $([regex]::Escape($ref))$") { $sha = $Matches[1]; break } } }
+            }
+        }
+        $tags = @()
+        $tagDir = Join-Path $g 'refs/tags'
+        if (Test-Path $tagDir) { foreach ($tf in Get-ChildItem $tagDir -File) { if ((Get-Content $tf.FullName -Raw).Trim() -eq $sha) { $tags += $tf.Name } } }
+        $packed = Join-Path $g 'packed-refs'
+        if (Test-Path $packed) { foreach ($l in Get-Content $packed) { if ($l -match "^$sha refs/tags/(.+)$") { $tags += $Matches[1] } } }
+        return "$($sha.Substring(0, [Math]::Min(8, $sha.Length)))$(if($tags.Count){" ($(($tags | Select-Object -Unique) -join ', '))"})"
+    } catch { return 'unknown' }
+}
+
 # Security groups on environments: one rule for the sweep's console line and the report's 1.3/2.4.
 # Eligible = backed by Dataverse and not Default, Developer or Teams (Microsoft allows no group on
 # Default; a Teams environment is bound to its team automatically). Bound = a group id that is set
@@ -637,15 +756,46 @@ function Test-EnvSecurityGroup($e) {
 # 365 ERP (Finance and Operations). One for a pilot group or a single other app does not.
 $script:D365ResourceAppIds = @('00000007-0000-0000-c000-000000000000', '00000015-0000-0000-c000-000000000000')
 function Test-CaPolicyCoversD365($p) {
+    $c = $p.conditions
+    # Limited to risky sign-ins or users, some client apps, some platforms or some locations: the
+    # policy does not apply to an ordinary sign-in, so it does not cover everyone.
+    if (@(@($c.signInRiskLevels) + @($c.userRiskLevels) | Where-Object { $_ -and "$_" -ne 'none' }).Count) { return $false }
+    if ($c.insiderRiskLevels) { return $false }
+    $cat = @($c.clientAppTypes | Where-Object { $_ } | ForEach-Object { "$_" })
+    if ($cat.Count -and $cat -notcontains 'all' -and -not ($cat -contains 'browser' -and $cat -contains 'mobileAppsAndDesktopClients')) { return $false }
+    $plat = @($c.platforms.includePlatforms | Where-Object { $_ } | ForEach-Object { "$_" })
+    if ($plat.Count -and $plat -notcontains 'all') { return $false }
+    $locs = @($c.locations.includeLocations | Where-Object { $_ } | ForEach-Object { "$_" })
+    if ($locs.Count -and $locs -notcontains 'All') { return $false }
     $users = @($p.conditions.users.includeUsers | ForEach-Object { "$_" })
     $apps  = @($p.conditions.applications.includeApplications | ForEach-Object { "$_".ToLower() })
+    $excl  = @($p.conditions.applications.excludeApplications | ForEach-Object { "$_".ToLower() })
     $allUsers = ($users -contains 'All')
-    $d365Apps = ($apps -contains 'all') -or (@($apps | Where-Object { $script:D365ResourceAppIds -contains $_ }).Count -gt 0)
+    # All apps counts only when no Dynamics resource app is excluded from it.
+    $d365Apps = (($apps -contains 'all') -and -not @($excl | Where-Object { $script:D365ResourceAppIds -contains $_ }).Count) -or (@($apps | Where-Object { $script:D365ResourceAppIds -contains $_ }).Count -gt 0)
     return [bool]($allUsers -and $d365Apps)
+}
+# An MFA policy that also accepts another control ("require one of the selected controls", for
+# example a compliant device) lets people through without MFA on that path. Microsoft's own
+# templates use this; it is counted as MFA and named, not failed.
+function Test-CaPolicyMfaOrOther($p) {
+    $g = $p.grantControls
+    $others = @(@($g.builtInControls) | Where-Object { $_ -and "$_" -ne 'mfa' }).Count + @(@($g.termsOfUse) | Where-Object { $_ }).Count
+    return [bool]($others -gt 0 -and "$($g.operator)" -ne 'AND')
+}
+# Requires a compliant or hybrid-joined device: a device control, and no other way through ("require
+# one of the selected controls" with MFA as an alternative lets an unmanaged device in with MFA).
+function Test-CaPolicyRequiresDevice($p) {
+    $g = $p.grantControls
+    $b = @(@($g.builtInControls) | Where-Object { $_ } | ForEach-Object { "$_" })
+    if (-not @($b | Where-Object { $_ -in 'compliantDevice', 'domainJoinedDevice' }).Count) { return $false }
+    if ("$($g.operator)" -eq 'AND') { return $true }
+    $others = @($b | Where-Object { $_ -notin 'compliantDevice', 'domainJoinedDevice' }).Count + @(@($g.termsOfUse) | Where-Object { $_ }).Count + $(if ($null -ne $g.authenticationStrength) { 1 } else { 0 })
+    return ($others -eq 0)
 }
 function Test-CaPolicyHasExclusions($p) {
     $u = $p.conditions.users
-    return [bool](@($u.excludeUsers | Where-Object { $_ }).Count -or @($u.excludeGroups | Where-Object { $_ }).Count -or @($u.excludeRoles | Where-Object { $_ }).Count)
+    return [bool](@($u.excludeUsers | Where-Object { $_ }).Count -or @($u.excludeGroups | Where-Object { $_ }).Count -or @($u.excludeRoles | Where-Object { $_ }).Count -or $null -ne $u.excludeGuestsOrExternalUsers -or @($p.conditions.applications.excludeApplications | Where-Object { $_ }).Count -or @($p.conditions.locations.excludeLocations | Where-Object { $_ }).Count)
 }
 
 # How a Dataverse user record is marked in a list of people: a support user (accessmode 3), a
@@ -664,7 +814,7 @@ function Get-StaleEvidence([string]$OutDir, $Scope) {
     $stale = @()
     try {
         $runStart = [datetime]::Parse("$($Scope.resolvedAt)", [cultureinfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)
-        foreach ($f in @(Get-ChildItem $OutDir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $OutDir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
             if ($f.Name -in 'scope-effective.json', 'assessment-report.json', 'FINDINGS-summary.json') { continue }
             if ($f.LastWriteTimeUtc -lt $runStart.AddMinutes(-2)) { $stale += $f.Name }
         }

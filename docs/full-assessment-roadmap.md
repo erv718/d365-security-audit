@@ -52,7 +52,7 @@ template, so it mirrors 2.4's verdict and is left out of the tally.
 | 5.2 | Field-level / record / BU security | `dvplus-*-fieldpermissions.json`, `dv-*-fieldsec.json` | dataverse-plus, dataverse-sweep | Any field permission, or a field security profile other than the built-in System Administrator one, = Partial; none = Gap, but only when both reads succeeded in every environment counted (one failed read = Not checked, with its reason). Counted per environment |
 | 5.3 | DLP / IRM / classification | `pp-dlp-policies.json`, `pp-environments.json` | powerplatform-sweep | 0 policies = Gap; default environment covered = Aligned; otherwise Partial |
 | 6.1 | External integration security | `arm-*-logicapps.json`, `arm-*-appservice.json`, `arm-*-apiconnections.json`, `arm-*-automation.json` | azure-plus, azure-exposure | Inventory produced = Partial; the evidence counts Logic Apps open to any caller, HTTP functions that need no key, API connections signed in as a named account and retired Run As connections |
-| 6.2 | API keys / credentials / tokens | `applications.json` | graph-sweep | An expired credential still present = Gap; else Partial |
+| 6.2 | API keys / credentials / tokens | `applications.json` | graph-sweep | Partial whenever credentials were read (expired ones can no longer sign in, so they are cleanup; rotation and storage practice to confirm); Not checked otherwise |
 | 7.1 | Incident response plan | none | | MANUAL (a document and a process) |
 | 7.2 | Vulnerability scanning / pen testing | `arm-*-defender-pricings.json` | azure-plus | Any documented Defender plan on Standard = Partial; else MANUAL |
 | 8.1 | Data sovereignty / residency | `pp-environments.json` (`azureRegion`) | powerplatform-sweep | MANUAL; the regions are listed, adequacy is a legal call |
@@ -90,8 +90,23 @@ shared keys; App Service and Function Apps without HTTPS Only, on old TLS, with 
 remote debugging, open to any IP, or with HTTP functions that need no key; Logic Apps open to
 any caller; retired Automation Run As connections; API connections signed in as a named or
 dormant account; the Dataverse IP firewall off or in audit-only mode; Key Vaults on access
-policies or with public access. The report also lists which resource types in the inventory a
-security rule checks, and `inventory-check.ps1` cross-checks a portal export.
+policies, with public access, or without soft delete or purge protection. The report also lists
+which resource types in the inventory a security rule checks, and `inventory-check.ps1`
+cross-checks a portal export.
+
+Current-state checks for "who could open a door, and who did": specific public IP addresses
+allowed on remote-admin or database ports, compared with the Conditional Access IP named
+locations (`ca-named-locations.json`) and Microsoft's Lifecycle Services management addresses
+(which reach cloud-hosted VMs on WinRM 5986 by design); every other allow-list address that is
+in no named location; who can change network rules per subscription and below management groups
+(Owner, Contributor, Network Contributor, any other role that can write NSG rules, read from
+the definition of every other assigned role from `arm-*-roledefs.json`, and the roles that can grant those); the owners of apps that hold
+high-privilege permissions (`app-owners.json`), who can add a secret and act as the app; and the
+holders of Application Administrator and Cloud Application Administrator.
+
+Every finding carries a `Key` into `scripts/finding-catalog.json`, the fixed plain-language
+explanation, fix steps and Microsoft Learn links that `security-report.ps1` prints in
+`security-assessment.html`.
 
 When a pull fails, every **Not checked** row it feeds quotes the service's own error from the
 matching `*-ERROR.json` (HTTP status, error code, message).

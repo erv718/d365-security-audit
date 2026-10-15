@@ -44,6 +44,11 @@ Write-Host "Output goes to ./output (git-ignored). Nothing is changed in your te
 # Scope parameters travel to the scripts as process variables for this run only; the previous
 # values are restored at the end so an interactive session is left as it was.
 if ($Scope -and (Test-Path $Scope)) { $Scope = (Resolve-Path $Scope).Path }
+# Built one by one: in Windows PowerShell 5.1 an empty $(if ...) inside @( ... ) can drop the
+# items after it.
+$skipped = @()
+if ($SkipGraph) { $skipped += 'graph' }; if ($SkipPowerPlatform) { $skipped += 'powerplatform' }
+if ($SkipDataverse) { $skipped += 'dataverse' }; if ($SkipAzure) { $skipped += 'azure' }
 $scopeVars = @{
     SECAUDIT_SCOPE_FILE      = $Scope
     SECAUDIT_SUBSCRIPTIONS   = ($Subscriptions -join ',')
@@ -51,12 +56,13 @@ $scopeVars = @{
     SECAUDIT_ENVIRONMENTS    = ($Environments -join ',')
     SECAUDIT_TYPES           = ($Types -join ',')
     SECAUDIT_STRICT_SCOPE    = $(if ($StrictScope) { '1' } else { '' })
-    SECAUDIT_SKIPPED         = (@($(if ($SkipGraph) { 'graph' }), $(if ($SkipPowerPlatform) { 'powerplatform' }), $(if ($SkipDataverse) { 'dataverse' }), $(if ($SkipAzure) { 'azure' })) | Where-Object { $_ }) -join ','
+    SECAUDIT_SKIPPED         = ($skipped -join ',')
 }
 $previous = @{}
 foreach ($k in @($scopeVars.Keys)) {
     $previous[$k] = [Environment]::GetEnvironmentVariable($k)
     if ($scopeVars[$k]) { [Environment]::SetEnvironmentVariable($k, $scopeVars[$k]) }
+    elseif ($k -eq 'SECAUDIT_SKIPPED') { [Environment]::SetEnvironmentVariable($k, $null) }   # only this run's switches count
 }
 
 try {
@@ -108,6 +114,7 @@ try {
 
     Step 'scripts/analyze.ps1'
     Step 'scripts/assessment-report.ps1'   # maps the pulls to the MS 29-check assessment + extras
+    Step 'scripts/security-report.ps1'     # the readable report: each issue, why it matters, the fix, Microsoft links
     Step 'scripts/ai-analysis.ps1'         # optional; no-op unless AI_ANALYSIS=local|api in .env
     if ($Inventory) { try { & (Join-Path $here 'scripts/inventory-check.ps1') -FromInventory $Inventory } catch { Write-Warning "Inventory cross-check failed: $($_.Exception.Message)" } }
 
